@@ -15,7 +15,7 @@ const {
 } = require('../controllers/adminController');
 const { protect } = require('../middleware/authMiddleware');
 
-router.post('/register', registerAdmin);
+router.post('/register', protect, registerAdmin);
 router.post('/login', loginAdmin);
 router.route('/profile')
   .get(protect, getAdminProfile)
