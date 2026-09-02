@@ -19,10 +19,11 @@ exports.submitApplication = async (req, res) => {
       loanAmount,
       purpose,
       employmentType,
-      message
+      message,
+      propertyAddress
     } = req.body;
 
-    if (!fullName || !mobile || !gender || !purpose || !employmentType) {
+    if (!fullName || !mobile || !purpose || !employmentType) {
       return res.status(400).json({ success: false, message: 'Please fill in all required fields.' });
     }
 

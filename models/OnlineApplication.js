@@ -28,9 +28,11 @@ const onlineApplicationSchema = new mongoose.Schema({
   },
   gender: {
     type: String,
-    required: true,
   },
   maritalStatus: {
+    type: String,
+  },
+  propertyAddress: {
     type: String,
   },
   residentialCity: {
