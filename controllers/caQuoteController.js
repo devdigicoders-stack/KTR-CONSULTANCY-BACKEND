@@ -6,19 +6,46 @@ const generateQuoteId = () => {
   return `KTR-CAQ-${ts}${rand}`;
 };
 
-// @desc    Submit a CA quote request (public)
+// @desc    Submit a CA quote / application request (public)
 // @route   POST /api/ca-quotes/submit
 exports.submitQuote = async (req, res) => {
   try {
     const { serviceType, fullName, mobile, email, city, businessName, businessConstitution, message } = req.body;
-    if (!serviceType || !fullName || !mobile || !city) {
-      return res.status(400).json({ success: false, message: 'Service, Full Name, Mobile and City are required.' });
+    if (!serviceType || !fullName || !mobile) {
+      return res.status(400).json({ success: false, message: 'Full Name and Mobile Number are required.' });
     }
+
     const quoteId = generateQuoteId();
-    const quote = await CAQuote.create({ quoteId, serviceType, fullName, mobile, email, city, businessName, businessConstitution, message });
-    res.status(201).json({ success: true, message: 'Quote request submitted successfully', data: quote });
+
+    // Process uploaded documents if any
+    let documents = [];
+    if (req.files && req.files.length > 0) {
+      documents = req.files.map(file => ({
+        filename: file.filename,
+        originalName: file.originalname,
+        path: file.path,
+        url: `/uploads/${file.filename}`,
+        size: file.size,
+        mimetype: file.mimetype
+      }));
+    }
+
+    const quote = await CAQuote.create({
+      quoteId,
+      serviceType,
+      fullName: fullName.trim(),
+      mobile: mobile.trim(),
+      email: email ? email.trim() : '',
+      city: city.trim(),
+      businessName: businessName ? businessName.trim() : '',
+      businessConstitution: businessConstitution ? businessConstitution.trim() : '',
+      message: message ? message.trim() : '',
+      documents
+    });
+
+    res.status(201).json({ success: true, message: 'Application submitted successfully', data: quote });
   } catch (error) {
-    console.error('Error submitting CA quote:', error);
+    console.error('Error submitting CA quote/application:', error);
     res.status(500).json({ success: false, message: 'Server error. Please try again.' });
   }
 };

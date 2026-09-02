@@ -6,10 +6,18 @@ const caQuoteSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   mobile: { type: String, required: true },
   email: { type: String },
-  city: { type: String, required: true },
+  city: { type: String },
   businessName: { type: String },
   businessConstitution: { type: String },
   message: { type: String },
+  documents: [{
+    filename: String,
+    originalName: String,
+    path: String,
+    url: String,
+    size: Number,
+    mimetype: String
+  }],
   status: {
     type: String,
     enum: ['New', 'In Discussion', 'Quote Sent', 'Closed'],
