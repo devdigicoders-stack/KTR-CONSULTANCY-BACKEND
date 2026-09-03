@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const {
   submitApplication,
   getAllApplications,
@@ -10,8 +13,40 @@ const {
 } = require('../controllers/applicationController');
 const { protect } = require('../middleware/authMiddleware');
 
-// Public route for website submission
-router.post('/submit', submitApplication);
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, '../uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Multer Storage Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const cleanName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+    cb(null, `loan_${Date.now()}_${Math.floor(Math.random() * 1000)}_${cleanName}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max per file
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPG, PNG, PDF, DOC, DOCX, XLS, XLSX, and ZIP files are allowed.'));
+    }
+  }
+});
+
+// Public route for website submission (accepts up to 10 document uploads)
+router.post('/submit', upload.array('documents', 10), submitApplication);
 
 // Protected routes for admin panel
 router.get('/pending-count', protect, getPendingCount);

@@ -23,8 +23,8 @@ exports.submitApplication = async (req, res) => {
       propertyAddress
     } = req.body;
 
-    if (!fullName || !mobile || !purpose || !employmentType) {
-      return res.status(400).json({ success: false, message: 'Please fill in all required fields.' });
+    if (!fullName || !mobile) {
+      return res.status(400).json({ success: false, message: 'Full name and mobile number are required.' });
     }
 
     if (purpose === 'Other' && !req.body.otherPurpose) {
@@ -35,8 +35,29 @@ exports.submitApplication = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please specify the service you are looking for.' });
     }
 
+    const resolvedServiceType = serviceType || 'Loan Service';
+    const resolvedPurpose = purpose || resolvedServiceType;
+    const resolvedEmployment = employmentType || 'Not Specified';
+
+    // Process uploaded documents if any
+    let documents = [];
+    if (req.files && req.files.length > 0) {
+      documents = req.files.map(file => ({
+        filename: file.filename,
+        originalName: file.originalname,
+        path: file.path,
+        url: `/uploads/${file.filename}`,
+        size: file.size,
+        mimetype: file.mimetype
+      }));
+    }
+
     const application = await OnlineApplication.create({
       ...req.body,
+      serviceType: resolvedServiceType,
+      purpose: resolvedPurpose,
+      employmentType: resolvedEmployment,
+      documents,
       applicationId: 'KTR' + Date.now().toString().slice(-8) + Math.random().toString(36).slice(2, 5).toUpperCase()
     });
 

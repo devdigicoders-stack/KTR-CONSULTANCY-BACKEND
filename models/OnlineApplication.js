@@ -35,6 +35,18 @@ const onlineApplicationSchema = new mongoose.Schema({
   propertyAddress: {
     type: String,
   },
+  approxPropertyValue: {
+    type: String,
+  },
+  hasExistingLoan: {
+    type: String, // 'Yes' or 'No'
+  },
+  existingEmiAmount: {
+    type: String,
+  },
+  specificLoanDetails: {
+    type: mongoose.Schema.Types.Mixed,
+  },
   residentialCity: {
     type: String,
   },
@@ -61,6 +73,14 @@ const onlineApplicationSchema = new mongoose.Schema({
   message: {
     type: String,
   },
+  documents: [{
+    filename: String,
+    originalName: String,
+    path: String,
+    url: String,
+    size: Number,
+    mimetype: String
+  }],
   remark: {
     type: String,
     default: ''
