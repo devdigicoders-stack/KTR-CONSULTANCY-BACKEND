@@ -20,9 +20,27 @@ exports.submitProfile = async (req, res) => {
       docUpdates.otherDocs = files.otherDocs.map(f => `/uploads/${f.filename}`);
     }
 
+    let coApplicantObj = null;
+    if (req.body.hasCoApplicant === 'true' || req.body.hasCoApplicant === true) {
+      coApplicantObj = {
+        fullName: req.body.coApplicant_fullName || '',
+        mobile: req.body.coApplicant_mobile || '',
+        occupation: req.body.coApplicant_occupation || '',
+        motherName: req.body.coApplicant_motherName || '',
+        panNumber: req.body.coApplicant_panNumber || '',
+        aadhaarNumber: req.body.coApplicant_aadhaarNumber || '',
+        addressLine1: req.body.coApplicant_addressLine1 || '',
+        city: req.body.coApplicant_city || '',
+        state: req.body.coApplicant_state || '',
+        pincode: req.body.coApplicant_pincode || '',
+      };
+    }
+
     const profileData = {
       ...req.body,
       ...docUpdates,
+      hasCoApplicant: req.body.hasCoApplicant === 'true' || req.body.hasCoApplicant === true,
+      ...(coApplicantObj ? { coApplicant: coApplicantObj } : {}),
       user: userId,
       status: 'Pending'
     };
@@ -32,7 +50,7 @@ exports.submitProfile = async (req, res) => {
     res.status(201).json({ success: true, message: 'Client added successfully', data: profile });
   } catch (error) {
     console.error('Submit Profile Error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
 

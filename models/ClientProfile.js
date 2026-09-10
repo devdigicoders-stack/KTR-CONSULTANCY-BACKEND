@@ -8,26 +8,27 @@ const clientProfileSchema = new mongoose.Schema({
   },
   // Personal & Contact
   fullName: { type: String, required: true },
-  dob: { type: Date, required: true },
-  gender: { type: String, enum: ['Male', 'Female', 'Other'], required: true },
-  panNumber: { type: String, required: true },
+  dob: { type: Date },
+  gender: { type: String },
+  panNumber: { type: String },
   aadhaarNumber: { type: String },
   mobile: { type: String, required: true },
-  email: { type: String, required: true },
+  email: { type: String },
   alternativeEmail: { type: String },
+  motherName: { type: String },
 
   // Identity & Address
-  idProofType: { type: String, required: true },
-  idProofNumber: { type: String, required: true },
-  addressLine1: { type: String, required: true },
+  idProofType: { type: String },
+  idProofNumber: { type: String },
+  addressLine1: { type: String },
   addressLine2: { type: String },
-  country: { type: String, default: 'India', required: true },
-  state: { type: String, required: true },
-  city: { type: String, required: true },
-  pincode: { type: String, required: true },
+  country: { type: String, default: 'India' },
+  state: { type: String },
+  city: { type: String },
+  pincode: { type: String },
 
   // Additional Information
-  occupation: { type: String },
+  occupation: { type: String, required: true },
   companyName: { type: String },
   designation: { type: String },
   annualIncome: { type: Number },
@@ -35,6 +36,21 @@ const clientProfileSchema = new mongoose.Schema({
   businessType: { type: String },
   yearsInBusiness: { type: Number },
   website: { type: String },
+
+  // Co-Applicant (Optional)
+  hasCoApplicant: { type: Boolean, default: false },
+  coApplicant: {
+    fullName: { type: String },
+    mobile: { type: String },
+    occupation: { type: String },
+    motherName: { type: String },
+    panNumber: { type: String },
+    aadhaarNumber: { type: String },
+    addressLine1: { type: String },
+    city: { type: String },
+    state: { type: String },
+    pincode: { type: String }
+  },
 
   // Reference (Optional)
   referredBy: { type: String },
