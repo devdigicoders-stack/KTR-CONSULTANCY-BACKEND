@@ -63,6 +63,10 @@ const clientProfileSchema = new mongoose.Schema({
   idProofUrl: { type: String },
   addressProofUrl: { type: String },
   panCardUrl: { type: String },
+  aadhaarUrl: { type: String },
+  salarySlipUrl: { type: String },
+  bankStatementUrl: { type: String },
+  otherDocUrl: { type: String },
   otherDocs: [{ type: String }],
 
   // Application Status

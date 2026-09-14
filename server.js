@@ -43,11 +43,13 @@ const insuranceRoutes = require('./routes/insuranceRoutes');
 const eligibilityCheckRoutes = require('./routes/eligibilityCheckRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 // Use Routes
 app.use('/api/cibil', cibilRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/clients', clientRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/cibil-reports', cibilReportRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/enquiries', enquiryRoutes);
@@ -79,7 +81,7 @@ app.get('/', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ success: false, message: 'Internal Server Error' });
+  res.status(500).json({ success: false, message: err.message || 'Internal Server Error' });
 });
 
 const PORT = process.env.PORT || 5000;

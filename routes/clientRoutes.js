@@ -45,6 +45,10 @@ const uploadFields = upload.fields([
   { name: 'idProofUrl', maxCount: 1 },
   { name: 'addressProofUrl', maxCount: 1 },
   { name: 'panCardUrl', maxCount: 1 },
+  { name: 'aadhaarUrl', maxCount: 1 },
+  { name: 'salarySlipUrl', maxCount: 1 },
+  { name: 'bankStatementUrl', maxCount: 1 },
+  { name: 'otherDocUrl', maxCount: 1 },
   { name: 'otherDocs', maxCount: 5 }
 ]);
 

@@ -16,8 +16,16 @@ exports.submitProfile = async (req, res) => {
     if (files.idProofUrl) docUpdates.idProofUrl = `/uploads/${files.idProofUrl[0].filename}`;
     if (files.addressProofUrl) docUpdates.addressProofUrl = `/uploads/${files.addressProofUrl[0].filename}`;
     if (files.panCardUrl) docUpdates.panCardUrl = `/uploads/${files.panCardUrl[0].filename}`;
+    if (files.aadhaarUrl) docUpdates.aadhaarUrl = `/uploads/${files.aadhaarUrl[0].filename}`;
+    if (files.salarySlipUrl) docUpdates.salarySlipUrl = `/uploads/${files.salarySlipUrl[0].filename}`;
+    if (files.bankStatementUrl) docUpdates.bankStatementUrl = `/uploads/${files.bankStatementUrl[0].filename}`;
+    if (files.otherDocUrl) docUpdates.otherDocUrl = `/uploads/${files.otherDocUrl[0].filename}`;
     if (files.otherDocs) {
       docUpdates.otherDocs = files.otherDocs.map(f => `/uploads/${f.filename}`);
+    }
+
+    if (req.body.address && !req.body.addressLine1) {
+      docUpdates.addressLine1 = req.body.address;
     }
 
     let coApplicantObj = null;
@@ -29,7 +37,7 @@ exports.submitProfile = async (req, res) => {
         motherName: req.body.coApplicant_motherName || '',
         panNumber: req.body.coApplicant_panNumber || '',
         aadhaarNumber: req.body.coApplicant_aadhaarNumber || '',
-        addressLine1: req.body.coApplicant_addressLine1 || '',
+        addressLine1: req.body.coApplicant_address || req.body.coApplicant_addressLine1 || '',
         city: req.body.coApplicant_city || '',
         state: req.body.coApplicant_state || '',
         pincode: req.body.coApplicant_pincode || '',
@@ -190,6 +198,10 @@ exports.updateClient = async (req, res) => {
     if (files.idProofUrl) docUpdates.idProofUrl = `/uploads/${files.idProofUrl[0].filename}`;
     if (files.addressProofUrl) docUpdates.addressProofUrl = `/uploads/${files.addressProofUrl[0].filename}`;
     if (files.panCardUrl) docUpdates.panCardUrl = `/uploads/${files.panCardUrl[0].filename}`;
+    if (files.aadhaarUrl) docUpdates.aadhaarUrl = `/uploads/${files.aadhaarUrl[0].filename}`;
+    if (files.salarySlipUrl) docUpdates.salarySlipUrl = `/uploads/${files.salarySlipUrl[0].filename}`;
+    if (files.bankStatementUrl) docUpdates.bankStatementUrl = `/uploads/${files.bankStatementUrl[0].filename}`;
+    if (files.otherDocUrl) docUpdates.otherDocUrl = `/uploads/${files.otherDocUrl[0].filename}`;
     if (files.otherDocs) {
       docUpdates.otherDocs = files.otherDocs.map(f => `/uploads/${f.filename}`);
     }
@@ -329,6 +341,50 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Address Proof',
       file: profile.addressProofUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.aadhaarUrl) {
+    docs.push({
+      id: `DOC-AAD-${profile._id.toString().substring(18)}`,
+      name: 'Aadhaar Card',
+      client: profile.fullName,
+      category: 'Identity Proof',
+      file: profile.aadhaarUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.salarySlipUrl) {
+    docs.push({
+      id: `DOC-SAL-${profile._id.toString().substring(18)}`,
+      name: 'Salary Slip / ITR',
+      client: profile.fullName,
+      category: 'Financial Document',
+      file: profile.salarySlipUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.bankStatementUrl) {
+    docs.push({
+      id: `DOC-BANK-${profile._id.toString().substring(18)}`,
+      name: 'Bank Statement',
+      client: profile.fullName,
+      category: 'Financial Document',
+      file: profile.bankStatementUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.otherDocUrl) {
+    docs.push({
+      id: `DOC-OTH-${profile._id.toString().substring(18)}`,
+      name: 'Other Document',
+      client: profile.fullName,
+      category: 'Additional',
+      file: profile.otherDocUrl,
       uploaded: profile.createdAt,
       status: docStatus
     });
