@@ -36,6 +36,8 @@ const clientProfileSchema = new mongoose.Schema({
   businessType: { type: String },
   yearsInBusiness: { type: Number },
   website: { type: String },
+  loanAmount: { type: Number },
+  loanType: { type: String },
 
   // Co-Applicant (Optional)
   hasCoApplicant: { type: Boolean, default: false },
@@ -75,7 +77,41 @@ const clientProfileSchema = new mongoose.Schema({
     enum: ['Pending', 'Approved', 'Rejected'],
     default: 'Pending',
   },
-  adminRemarks: { type: String },
+  // Custom User/Staff Folders for Client
+  customFolders: [{
+    folderName: { type: String, required: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    createdByName: { type: String },
+    createdAt: { type: Date, default: Date.now },
+    documents: [{
+      name: { type: String, required: true },
+      fileUrl: { type: String, required: true },
+      category: { type: String, default: 'Custom File' },
+      uploadedAt: { type: Date, default: Date.now },
+      uploadedByName: { type: String }
+    }]
+  }],
+
+  // Soft-deleted documents (Backup for Admin view)
+  deletedDocuments: [{
+    docType: { type: String },
+    docName: { type: String },
+    fileUrl: { type: String },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    deletedByName: { type: String },
+    deletedAt: { type: Date, default: Date.now },
+    reason: { type: String }
+  }],
+
+  // Audit Log / Edit History
+  editHistory: [{
+    editedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    editorName: { type: String },
+    editorRole: { type: String },
+    action: { type: String },
+    details: { type: String },
+    timestamp: { type: Date, default: Date.now }
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('ClientProfile', clientProfileSchema);

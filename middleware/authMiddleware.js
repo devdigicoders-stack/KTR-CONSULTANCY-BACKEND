@@ -11,7 +11,7 @@ const protect = async (req, res, next) => {
       token = req.headers.authorization.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      const admin = await Admin.findById(decoded.id).select('status');
+      const admin = await Admin.findById(decoded.id).select('-password');
       if (!admin) {
         return res.status(401).json({ success: false, message: 'Not authorized, user not found' });
       }
@@ -21,6 +21,7 @@ const protect = async (req, res, next) => {
       }
 
       req.adminId = decoded.id; // Append admin ID to request object
+      req.user = admin; // Attach full user object
       next();
     } catch (error) {
       console.error(error);

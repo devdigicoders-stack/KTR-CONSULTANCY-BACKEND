@@ -206,22 +206,410 @@ exports.updateClient = async (req, res) => {
       docUpdates.otherDocs = files.otherDocs.map(f => `/uploads/${f.filename}`);
     }
 
-    // Merge existing docs with new ones (we don't delete old ones from FS here for simplicity)
-    const updatedData = {
-      ...req.body,
-      ...docUpdates
-    };
+    // Detect field changes for edit history
+    const changesList = [];
+    const fieldsToTrack = [
+      { key: 'mobile', label: 'Mobile No.' },
+      { key: 'email', label: 'Email ID' },
+      { key: 'fullName', label: 'Full Name' },
+      { key: 'panNumber', label: 'PAN Number' },
+      { key: 'aadhaarNumber', label: 'Aadhaar Number' },
+      { key: 'occupation', label: 'Occupation' },
+      { key: 'loanAmount', label: 'Loan Amount' },
+      { key: 'addressLine1', label: 'Address' },
+      { key: 'status', label: 'Status' }
+    ];
 
-    const updatedClient = await ClientProfile.findByIdAndUpdate(
-      req.params.id,
-      updatedData,
-      { new: true }
-    );
+    fieldsToTrack.forEach(item => {
+      if (req.body[item.key] !== undefined && String(req.body[item.key]) !== String(client[item.key] || '')) {
+        changesList.push(`${item.label}: "${client[item.key] || 'N/A'}" ➔ "${req.body[item.key]}"`);
+      }
+    });
 
-    res.json({ success: true, message: 'Client updated successfully', data: updatedClient });
+    Object.keys(docUpdates).forEach(docKey => {
+      changesList.push(`Updated Document: ${docKey}`);
+    });
+
+    if (changesList.length > 0) {
+      client.editHistory.push({
+        editedBy: req.user?._id || req.adminId,
+        editorName: req.user?.name || 'Staff/Admin',
+        editorRole: req.user?.role || 'staff',
+        action: 'Client Profile Updated',
+        details: changesList.join(' | '),
+        timestamp: new Date()
+      });
+    }
+
+    // Apply updates
+    Object.assign(client, req.body, docUpdates);
+
+    await client.save();
+
+    res.json({ success: true, message: 'Client updated successfully', data: client });
   } catch (error) {
     console.error('Update Client Error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Add single document to client profile
+// @route   POST /api/clients/:id/documents
+// @access  Private (Admin/Staff)
+exports.addClientDocument = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
+    const { docType, docName } = req.body;
+    const fileUrl = `/uploads/${req.file.filename}`;
+    const displayName = docName || req.file.originalname || docType || 'New Document';
+
+    if (docType && docType !== 'otherDocs' && client[docType] !== undefined) {
+      // If replacing an existing standard doc, soft delete the old one first
+      if (client[docType]) {
+        client.deletedDocuments.push({
+          docType,
+          docName: `${displayName} (Replaced)`,
+          fileUrl: client[docType],
+          deletedBy: req.user?._id || req.adminId,
+          deletedByName: req.user?.name || 'Staff/Admin',
+          deletedAt: new Date(),
+          reason: 'Replaced with new document'
+        });
+      }
+      client[docType] = fileUrl;
+    } else {
+      // Add to otherDocs array
+      if (!client.otherDocs) client.otherDocs = [];
+      client.otherDocs.push(fileUrl);
+    }
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Document Added',
+      details: `Added document: ${displayName}`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    const documents = extractDocuments(client);
+    res.json({
+      success: true,
+      message: 'Document uploaded successfully',
+      data: {
+        client,
+        documentsList: documents
+      }
+    });
+  } catch (error) {
+    console.error('Add Document Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Soft-delete document for client profile (Backup retained in DB)
+// @route   DELETE /api/clients/:id/documents
+// @access  Private (Admin/Staff)
+exports.softDeleteDocument = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { docType, fileUrl, docName, reason } = req.body;
+    if (!fileUrl) {
+      return res.status(400).json({ success: false, message: 'fileUrl is required' });
+    }
+
+    const displayName = docName || 'Document';
+
+    // Save to deletedDocuments backup
+    client.deletedDocuments.push({
+      docType: docType || 'document',
+      docName: displayName,
+      fileUrl: fileUrl,
+      deletedBy: req.user?._id || req.adminId,
+      deletedByName: req.user?.name || 'Staff/Admin',
+      deletedAt: new Date(),
+      reason: reason || 'Deleted by staff/admin'
+    });
+
+    // Remove from active document fields
+    if (docType && docType !== 'otherDocs' && client[docType] === fileUrl) {
+      client[docType] = null;
+    } else if (docType === 'otherDocs' || (client.otherDocs && client.otherDocs.includes(fileUrl))) {
+      client.otherDocs = client.otherDocs.filter(url => url !== fileUrl);
+    } else {
+      // Search standard doc fields to clear match
+      const standardFields = ['photoUrl', 'panCardUrl', 'idProofUrl', 'addressProofUrl', 'aadhaarUrl', 'salarySlipUrl', 'bankStatementUrl', 'otherDocUrl'];
+      standardFields.forEach(field => {
+        if (client[field] === fileUrl) {
+          client[field] = null;
+        }
+      });
+    }
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Document Soft-Deleted (Backed Up)',
+      details: `Soft-deleted "${displayName}" (Backed up in DB)`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    const documents = extractDocuments(client);
+    res.json({
+      success: true,
+      message: 'Document deleted and moved to backup',
+      data: {
+        client,
+        documentsList: documents,
+        deletedDocuments: client.deletedDocuments
+      }
+    });
+  } catch (error) {
+    console.error('Soft Delete Document Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Create custom folder inside client profile
+// @route   POST /api/clients/:id/folders
+// @access  Private (Admin/Staff)
+exports.createCustomFolder = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { folderName } = req.body;
+    if (!folderName || !folderName.trim()) {
+      return res.status(400).json({ success: false, message: 'Folder name is required' });
+    }
+
+    const trimmedName = folderName.trim();
+    if (!client.customFolders) client.customFolders = [];
+
+    // Check duplicate name
+    const existing = client.customFolders.find(f => f.folderName.toLowerCase() === trimmedName.toLowerCase());
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'A folder with this name already exists' });
+    }
+
+    client.customFolders.push({
+      folderName: trimmedName,
+      createdBy: req.user?._id || req.adminId,
+      createdByName: req.user?.name || 'Staff/Admin',
+      createdAt: new Date(),
+      documents: []
+    });
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Custom Folder Created',
+      details: `Created folder "${trimmedName}"`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+    res.json({
+      success: true,
+      message: `Folder "${trimmedName}" created successfully`,
+      data: client.customFolders
+    });
+  } catch (error) {
+    console.error('Create Folder Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Delete custom folder (soft-deletes contained documents)
+// @route   DELETE /api/clients/:id/folders/:folderId
+// @access  Private (Admin/Staff)
+exports.deleteCustomFolder = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const folder = client.customFolders.id(req.params.folderId);
+    if (!folder) {
+      return res.status(404).json({ success: false, message: 'Folder not found' });
+    }
+
+    const folderName = folder.folderName;
+
+    // Backup contained files into deletedDocuments
+    if (folder.documents && folder.documents.length > 0) {
+      folder.documents.forEach(doc => {
+        client.deletedDocuments.push({
+          docType: 'customFolderFile',
+          docName: `${doc.name} (Folder: ${folderName})`,
+          fileUrl: doc.fileUrl,
+          deletedBy: req.user?._id || req.adminId,
+          deletedByName: req.user?.name || 'Staff/Admin',
+          deletedAt: new Date(),
+          reason: `Deleted folder "${folderName}"`
+        });
+      });
+    }
+
+    client.customFolders.pull({ _id: req.params.folderId });
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Custom Folder Deleted',
+      details: `Deleted folder "${folderName}" (Contained files backed up in DB)`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+    res.json({
+      success: true,
+      message: `Folder "${folderName}" deleted`,
+      data: client.customFolders
+    });
+  } catch (error) {
+    console.error('Delete Folder Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Upload file to a custom folder
+// @route   POST /api/clients/:id/folders/:folderId/documents
+// @access  Private (Admin/Staff)
+exports.uploadFolderDocument = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const folder = client.customFolders.id(req.params.folderId);
+    if (!folder) {
+      return res.status(404).json({ success: false, message: 'Folder not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
+    const docName = req.body.docName || req.file.originalname;
+    const fileUrl = `/uploads/${req.file.filename}`;
+
+    const newDoc = {
+      name: docName,
+      fileUrl: fileUrl,
+      category: `Folder: ${folder.folderName}`,
+      uploadedAt: new Date(),
+      uploadedByName: req.user?.name || 'Staff/Admin'
+    };
+
+    folder.documents.push(newDoc);
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'File Uploaded to Folder',
+      details: `Uploaded "${docName}" into folder "${folder.folderName}"`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: `File uploaded to folder "${folder.folderName}"`,
+      data: {
+        folder,
+        documentsList: extractDocuments(client)
+      }
+    });
+  } catch (error) {
+    console.error('Upload Folder File Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Delete single file from a custom folder (soft-delete to backup)
+// @route   DELETE /api/clients/:id/folders/:folderId/documents/:docId
+// @access  Private (Admin/Staff)
+exports.deleteFolderDocument = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const folder = client.customFolders.id(req.params.folderId);
+    if (!folder) {
+      return res.status(404).json({ success: false, message: 'Folder not found' });
+    }
+
+    const doc = folder.documents.id(req.params.docId);
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Document not found in folder' });
+    }
+
+    const docName = doc.name;
+    const fileUrl = doc.fileUrl;
+
+    // Backup to deletedDocuments
+    client.deletedDocuments.push({
+      docType: 'customFolderFile',
+      docName: `${docName} (Folder: ${folder.folderName})`,
+      fileUrl: fileUrl,
+      deletedBy: req.user?._id || req.adminId,
+      deletedByName: req.user?.name || 'Staff/Admin',
+      deletedAt: new Date(),
+      reason: req.body.reason || `Deleted from folder "${folder.folderName}"`
+    });
+
+    folder.documents.pull({ _id: req.params.docId });
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'File Soft-Deleted from Folder',
+      details: `Deleted "${docName}" from folder "${folder.folderName}" (Backed up in DB)`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: `File deleted from folder "${folder.folderName}"`,
+      data: {
+        folder,
+        documentsList: extractDocuments(client)
+      }
+    });
+  } catch (error) {
+    console.error('Delete Folder File Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
 
@@ -315,6 +703,7 @@ const extractDocuments = (profile) => {
   if (profile.panCardUrl) {
     docs.push({
       id: `DOC-PAN-${profile._id.toString().substring(18)}`,
+      docType: 'panCardUrl',
       name: 'PAN Card',
       client: profile.fullName,
       category: 'Identity Proof',
@@ -326,6 +715,7 @@ const extractDocuments = (profile) => {
   if (profile.idProofUrl) {
     docs.push({
       id: `DOC-ID-${profile._id.toString().substring(18)}`,
+      docType: 'idProofUrl',
       name: `ID Proof (${profile.idProofType || 'Aadhaar'})`,
       client: profile.fullName,
       category: 'Identity Proof',
@@ -337,6 +727,7 @@ const extractDocuments = (profile) => {
   if (profile.addressProofUrl) {
     docs.push({
       id: `DOC-ADDR-${profile._id.toString().substring(18)}`,
+      docType: 'addressProofUrl',
       name: 'Address Proof',
       client: profile.fullName,
       category: 'Address Proof',
@@ -348,6 +739,7 @@ const extractDocuments = (profile) => {
   if (profile.aadhaarUrl) {
     docs.push({
       id: `DOC-AAD-${profile._id.toString().substring(18)}`,
+      docType: 'aadhaarUrl',
       name: 'Aadhaar Card',
       client: profile.fullName,
       category: 'Identity Proof',
@@ -359,6 +751,7 @@ const extractDocuments = (profile) => {
   if (profile.salarySlipUrl) {
     docs.push({
       id: `DOC-SAL-${profile._id.toString().substring(18)}`,
+      docType: 'salarySlipUrl',
       name: 'Salary Slip / ITR',
       client: profile.fullName,
       category: 'Financial Document',
@@ -370,6 +763,7 @@ const extractDocuments = (profile) => {
   if (profile.bankStatementUrl) {
     docs.push({
       id: `DOC-BANK-${profile._id.toString().substring(18)}`,
+      docType: 'bankStatementUrl',
       name: 'Bank Statement',
       client: profile.fullName,
       category: 'Financial Document',
@@ -381,6 +775,7 @@ const extractDocuments = (profile) => {
   if (profile.otherDocUrl) {
     docs.push({
       id: `DOC-OTH-${profile._id.toString().substring(18)}`,
+      docType: 'otherDocUrl',
       name: 'Other Document',
       client: profile.fullName,
       category: 'Additional',
@@ -394,6 +789,7 @@ const extractDocuments = (profile) => {
     profile.otherDocs.forEach((url, i) => {
       docs.push({
         id: `DOC-OTH-${profile._id.toString().substring(18)}-${i}`,
+        docType: 'otherDocs',
         name: `Other Document ${i+1}`,
         client: profile.fullName,
         category: 'Additional',
@@ -401,6 +797,25 @@ const extractDocuments = (profile) => {
         uploaded: profile.createdAt,
         status: docStatus
       });
+    });
+  }
+
+  if (profile.customFolders && profile.customFolders.length > 0) {
+    profile.customFolders.forEach((folder) => {
+      if (folder.documents && folder.documents.length > 0) {
+        folder.documents.forEach((doc) => {
+          docs.push({
+            id: doc._id ? doc._id.toString() : `DOC-FLD-${Math.random().toString(36).substring(7)}`,
+            docType: 'customFolderDoc',
+            name: `${doc.name} (${folder.name})`,
+            client: profile.fullName,
+            category: folder.name,
+            file: doc.fileUrl,
+            uploaded: doc.uploadedAt || profile.createdAt,
+            status: docStatus
+          });
+        });
+      }
     });
   }
   

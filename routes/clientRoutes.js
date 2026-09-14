@@ -17,7 +17,13 @@ const {
   getAllDocuments,
   getMyDocuments,
   getDashboardStats,
-  saveCreditInfo
+  saveCreditInfo,
+  addClientDocument,
+  softDeleteDocument,
+  createCustomFolder,
+  deleteCustomFolder,
+  uploadFolderDocument,
+  deleteFolderDocument
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -82,6 +88,22 @@ router.route('/:id')
   .get(protect, getClientById)
   .put(protect, uploadFields, updateClient)
   .delete(protect, deleteClient);
+
+router.route('/:id/documents')
+  .post(protect, upload.single('file'), addClientDocument)
+  .delete(protect, softDeleteDocument);
+
+router.route('/:id/folders')
+  .post(protect, createCustomFolder);
+
+router.route('/:id/folders/:folderId')
+  .delete(protect, deleteCustomFolder);
+
+router.route('/:id/folders/:folderId/documents')
+  .post(protect, upload.single('file'), uploadFolderDocument);
+
+router.route('/:id/folders/:folderId/documents/:docId')
+  .delete(protect, deleteFolderDocument);
 
 router.route('/:id/status')
   .patch(protect, updateClientStatus);
