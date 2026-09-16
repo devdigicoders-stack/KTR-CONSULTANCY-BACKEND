@@ -25,11 +25,20 @@ exports.saveCibilReport = async (req, res) => {
       message, 
       client_id, 
       user,
-      pricing
+      pricing,
+      reportType,
+      companyName,
+      companyType,
+      companyPan,
+      doi,
+      companyAddress,
+      pinCode,
+      email,
+      directors
     } = req.body;
 
     let invoiceNumber = req.body.invoiceNumber;
-    if (!invoiceNumber && (status === 'success' || status === 'notFound')) {
+    if (!invoiceNumber && (status === 'success' || status === 'notFound' || status === 'pending_fulfillment')) {
       invoiceNumber = generateInvoiceNumber();
     }
 
@@ -50,14 +59,23 @@ exports.saveCibilReport = async (req, res) => {
       if (invoiceNumber) report.invoiceNumber = invoiceNumber;
       if (pricing) report.pricing = pricing;
       if (user || req.adminId) report.user = user || req.adminId;
+      if (reportType) report.reportType = reportType;
+      if (companyName) report.companyName = companyName;
+      if (companyType) report.companyType = companyType;
+      if (companyPan) report.companyPan = companyPan;
+      if (doi) report.doi = doi;
+      if (companyAddress) report.companyAddress = companyAddress;
+      if (pinCode) report.pinCode = pinCode;
+      if (email) report.email = email;
+      if (directors) report.directors = directors;
       await report.save();
     } else {
       report = new CibilReport({
         name,
         mobile,
         pan,
-        gender,
-        bureau,
+        gender: gender || 'N/A',
+        bureau: bureau || 'Company CMR (TransUnion CIBIL)',
         score,
         pdfLink,
         paymentId,
@@ -66,7 +84,16 @@ exports.saveCibilReport = async (req, res) => {
         status: status || 'success',
         message,
         client_id,
-        user: user || (req.adminId ? req.adminId : null)
+        user: user || (req.adminId ? req.adminId : null),
+        reportType: reportType || 'individual',
+        companyName: companyName || null,
+        companyType: companyType || null,
+        companyPan: companyPan || null,
+        doi: doi || null,
+        companyAddress: companyAddress || null,
+        pinCode: pinCode || null,
+        email: email || null,
+        directors: directors || []
       });
       await report.save();
     }

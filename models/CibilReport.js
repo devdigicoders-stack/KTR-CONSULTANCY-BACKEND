@@ -15,8 +15,48 @@ const cibilReportSchema = new mongoose.Schema({
   },
   gender: {
     type: String,
-    required: true,
+    default: 'N/A',
   },
+  reportType: {
+    type: String,
+    enum: ['individual', 'company_cmr'],
+    default: 'individual',
+  },
+  companyName: {
+    type: String,
+    default: null,
+  },
+  companyType: {
+    type: String,
+    default: null,
+  },
+  companyPan: {
+    type: String,
+    default: null,
+  },
+  doi: {
+    type: String,
+    default: null,
+  },
+  companyAddress: {
+    type: String,
+    default: null,
+  },
+  pinCode: {
+    type: String,
+    default: null,
+  },
+  email: {
+    type: String,
+    default: null,
+  },
+  directors: [
+    {
+      name: { type: String, default: '' },
+      dob: { type: String, default: '' },
+      pan: { type: String, default: '' }
+    }
+  ],
   bureau: {
     type: String,
     required: true,
@@ -54,7 +94,7 @@ const cibilReportSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['success', 'notFound', 'failed', 'refunded'],
+    enum: ['success', 'notFound', 'failed', 'refunded', 'pending_fulfillment'],
   },
   message: {
     type: String,
