@@ -199,3 +199,63 @@ exports.deletePaymentLink = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// @desc    Download invoice PDF for payment link
+// @route   GET /api/payments/invoice-pdf/:id
+// @access  Public
+exports.downloadPaymentLinkInvoicePdf = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { generateInvoicePDFBuffer } = require('../services/invoicePdfService');
+
+    let link = null;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      link = await PaymentLink.findById(id);
+    }
+    if (!link) {
+      link = await PaymentLink.findOne({ $or: [{ linkId: id }, { invoiceNumber: id }, { paymentId: id }] });
+    }
+
+    if (!link) {
+      return res.status(404).json({ success: false, message: 'Payment invoice not found' });
+    }
+
+    const basePrice = link.amount || 0;
+    const discount = link.discount || 0;
+    const taxableValue = Math.max(0, basePrice - discount);
+    const taxRate = link.taxRate || 0;
+    const gstVal = link.taxAmount || Math.round((taxableValue * taxRate) / 100);
+    const cgst = (gstVal / 2).toFixed(2);
+    const sgst = (gstVal / 2).toFixed(2);
+    const totalAmount = link.totalAmount || (taxableValue + gstVal);
+
+    const invoiceData = {
+      invoiceNumber: link.invoiceNumber || `KTR/INV/${new Date().getFullYear()}/${Math.floor(10000 + Math.random() * 90000)}`,
+      clientName: link.clientName || 'Valued Client',
+      clientMobile: link.clientMobile || 'N/A',
+      pan: 'N/A',
+      serviceName: link.serviceName || 'Financial Advisory Service',
+      serviceDetails: link.serviceDetails || '',
+      basePrice,
+      discountAmount: discount,
+      taxableValue,
+      cgst,
+      sgst,
+      totalAmount,
+      paymentId: link.paymentId || 'N/A',
+      date: new Date(link.paidAt || link.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    };
+
+    const pdfBuffer = await generateInvoicePDFBuffer(invoiceData);
+
+    const safeFilename = `Invoice_${(invoiceData.invoiceNumber || 'KTR_INVOICE').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating Payment Link Invoice PDF:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
+  }
+};
+

@@ -21,4 +21,7 @@ router.get('/', protect, cibilReportController.getAllCibilReports);
 // Delete a CIBIL report
 router.delete('/:id', protect, cibilReportController.deleteCibilReport);
 
+// Direct download invoice PDF
+router.get('/invoice-pdf/:id', cibilReportController.downloadInvoicePdf);
+
 module.exports = router;

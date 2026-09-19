@@ -38,6 +38,7 @@ const clientProfileSchema = new mongoose.Schema({
   website: { type: String },
   loanAmount: { type: Number },
   loanType: { type: String },
+  caseType: { type: String },
 
   // Co-Applicant (Optional)
   hasCoApplicant: { type: Boolean, default: false },
@@ -67,7 +68,10 @@ const clientProfileSchema = new mongoose.Schema({
   panCardUrl: { type: String },
   aadhaarUrl: { type: String },
   salarySlipUrl: { type: String },
+  itrUrl: { type: String },
+  form16Url: { type: String },
   bankStatementUrl: { type: String },
+  propertyDocUrl: { type: String },
   otherDocUrl: { type: String },
   otherDocs: [{ type: String }],
 
@@ -77,6 +81,34 @@ const clientProfileSchema = new mongoose.Schema({
     enum: ['Pending', 'Approved', 'Rejected'],
     default: 'Pending',
   },
+
+  // Continuous Pendency Tracking (Complete History)
+  pendencies: [{
+    title: { type: String, required: true },
+    description: { type: String },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Resolved'],
+      default: 'Pending'
+    },
+    addedAt: { type: Date, default: Date.now },
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    addedByName: { type: String },
+    resolvedAt: { type: Date },
+    resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    resolvedByName: { type: String },
+    resolutionNotes: { type: String }
+  }],
+
+  // Standalone Named Custom Documents
+  customDocuments: [{
+    name: { type: String, required: true },
+    fileUrl: { type: String, required: true },
+    category: { type: String, default: 'Document' },
+    uploadedAt: { type: Date, default: Date.now },
+    uploadedByName: { type: String }
+  }],
+
   // Custom User/Staff Folders for Client
   customFolders: [{
     folderName: { type: String, required: true },

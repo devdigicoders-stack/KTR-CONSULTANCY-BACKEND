@@ -236,3 +236,65 @@ exports.deleteCibilReport = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to delete CIBIL report' });
   }
 };
+
+// Download Invoice PDF directly as attachment
+exports.downloadInvoicePdf = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { generateInvoicePDFBuffer } = require('../services/invoicePdfService');
+
+    let report = null;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      report = await CibilReport.findById(id);
+    }
+    if (!report) {
+      report = await CibilReport.findOne({ paymentId: id });
+    }
+
+    if (!report) {
+      return res.status(404).json({ success: false, message: 'Invoice / Report record not found' });
+    }
+
+    const bureau = report.bureau || 'TransUnion CIBIL';
+    const pricing = report.pricing || {};
+    const basePrice = pricing.basePrice || (report.reportType === 'company_cmr' ? 1500 : bureau.includes('CRIF') ? 450 : bureau.includes('Experian') ? 400 : bureau.includes('Equifax') ? 350 : 500);
+    const discountAmount = pricing.discountAmount || 0;
+    const couponCode = pricing.couponCode || null;
+    const taxableValue = Math.max(0, basePrice - discountAmount);
+    const totalGst = pricing.gstAmount !== undefined ? pricing.gstAmount : Math.round(taxableValue * 0.18);
+    const cgst = (totalGst / 2).toFixed(2);
+    const sgst = (totalGst / 2).toFixed(2);
+    const totalAmount = pricing.totalAmount || pricing.totalPayable || (taxableValue + totalGst);
+
+    const invoiceData = {
+      invoiceNumber: report.invoiceNumber || `KTR/INV/${new Date().getFullYear()}/${Math.floor(10000 + Math.random() * 90000)}`,
+      clientName: report.companyName || report.name || 'Valued Customer',
+      clientMobile: report.mobile || 'N/A',
+      pan: report.companyPan || report.pan || 'N/A',
+      serviceName: report.reportType === 'company_cmr' ? 'Company CIBIL CMR Report' : `Credit Bureau Report (${bureau})`,
+      serviceDetails: `Comprehensive credit analysis & official report fetch (${bureau})`,
+      bureau,
+      basePrice,
+      discountAmount,
+      couponCode,
+      taxableValue,
+      cgst,
+      sgst,
+      totalAmount,
+      paymentId: report.paymentId || 'N/A',
+      date: new Date(report.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    };
+
+    const pdfBuffer = await generateInvoicePDFBuffer(invoiceData);
+
+    const safeFilename = `Invoice_${(invoiceData.invoiceNumber || 'KTR_CIBIL').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating Invoice PDF:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
+  }
+};
+

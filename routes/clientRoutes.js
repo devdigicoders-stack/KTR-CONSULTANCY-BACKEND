@@ -23,7 +23,10 @@ const {
   createCustomFolder,
   deleteCustomFolder,
   uploadFolderDocument,
-  deleteFolderDocument
+  deleteFolderDocument,
+  addPendency,
+  updatePendencyStatus,
+  deletePendency
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -53,9 +56,12 @@ const uploadFields = upload.fields([
   { name: 'panCardUrl', maxCount: 1 },
   { name: 'aadhaarUrl', maxCount: 1 },
   { name: 'salarySlipUrl', maxCount: 1 },
+  { name: 'itrUrl', maxCount: 1 },
+  { name: 'form16Url', maxCount: 1 },
   { name: 'bankStatementUrl', maxCount: 1 },
+  { name: 'propertyDocUrl', maxCount: 1 },
   { name: 'otherDocUrl', maxCount: 1 },
-  { name: 'otherDocs', maxCount: 5 }
+  { name: 'otherDocs', maxCount: 10 }
 ]);
 
 // User Routes
@@ -89,8 +95,14 @@ router.route('/:id')
   .put(protect, uploadFields, updateClient)
   .delete(protect, deleteClient);
 
+// Setup Multer multi/single document upload handler
+const docUploadMiddleware = upload.fields([
+  { name: 'files', maxCount: 20 },
+  { name: 'file', maxCount: 1 }
+]);
+
 router.route('/:id/documents')
-  .post(protect, upload.single('file'), addClientDocument)
+  .post(protect, docUploadMiddleware, addClientDocument)
   .delete(protect, softDeleteDocument);
 
 router.route('/:id/folders')
@@ -100,10 +112,17 @@ router.route('/:id/folders/:folderId')
   .delete(protect, deleteCustomFolder);
 
 router.route('/:id/folders/:folderId/documents')
-  .post(protect, upload.single('file'), uploadFolderDocument);
+  .post(protect, docUploadMiddleware, uploadFolderDocument);
 
 router.route('/:id/folders/:folderId/documents/:docId')
   .delete(protect, deleteFolderDocument);
+
+router.route('/:id/pendencies')
+  .post(protect, addPendency);
+
+router.route('/:id/pendencies/:pendencyId')
+  .patch(protect, updatePendencyStatus)
+  .delete(protect, deletePendency);
 
 router.route('/:id/status')
   .patch(protect, updateClientStatus);

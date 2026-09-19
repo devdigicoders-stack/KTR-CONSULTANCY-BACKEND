@@ -253,7 +253,7 @@ exports.updateClient = async (req, res) => {
   }
 };
 
-// @desc    Add single document to client profile
+// @desc    Add single or multiple documents to client profile
 // @route   POST /api/clients/:id/documents
 // @access  Private (Admin/Staff)
 exports.addClientDocument = async (req, res) => {
@@ -263,40 +263,94 @@ exports.addClientDocument = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    if (!req.file) {
+    // Collect all uploaded files (supports req.files array or req.file single)
+    const uploadedFiles = [];
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      uploadedFiles.push(...req.files);
+    } else if (req.files && typeof req.files === 'object') {
+      Object.keys(req.files).forEach(k => {
+        if (Array.isArray(req.files[k])) uploadedFiles.push(...req.files[k]);
+        else if (req.files[k]) uploadedFiles.push(req.files[k]);
+      });
+    } else if (req.file) {
+      uploadedFiles.push(req.file);
+    }
+
+    if (uploadedFiles.length === 0) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const { docType, docName } = req.body;
-    const fileUrl = `/uploads/${req.file.filename}`;
-    const displayName = docName || req.file.originalname || docType || 'New Document';
+    const { docType, docName, category, folderId } = req.body;
+    const baseCategory = category || (docType && docType !== 'otherDocs' && docType !== 'customDocument' ? docType : 'Document');
+    const uploaderName = req.user?.name || 'Staff';
+    const addedDocNames = [];
 
-    if (docType && docType !== 'otherDocs' && client[docType] !== undefined) {
-      // If replacing an existing standard doc, soft delete the old one first
-      if (client[docType]) {
-        client.deletedDocuments.push({
-          docType,
-          docName: `${displayName} (Replaced)`,
-          fileUrl: client[docType],
-          deletedBy: req.user?._id || req.adminId,
-          deletedByName: req.user?.name || 'Staff/Admin',
-          deletedAt: new Date(),
-          reason: 'Replaced with new document'
-        });
-      }
-      client[docType] = fileUrl;
-    } else {
-      // Add to otherDocs array
-      if (!client.otherDocs) client.otherDocs = [];
-      client.otherDocs.push(fileUrl);
+    if (!client.customDocuments) client.customDocuments = [];
+    if (!client.otherDocs) client.otherDocs = [];
+
+    // If target is a custom folder
+    let targetFolder = null;
+    if (folderId && client.customFolders) {
+      targetFolder = client.customFolders.id(folderId);
     }
+
+    uploadedFiles.forEach((file, index) => {
+      const fileUrl = `/uploads/${file.filename}`;
+      let displayName = '';
+
+      if (uploadedFiles.length === 1) {
+        displayName = docName || file.originalname || 'Document';
+      } else {
+        if (docName) {
+          displayName = `${docName} (Part ${index + 1})`;
+        } else {
+          displayName = file.originalname;
+        }
+      }
+
+      if (targetFolder) {
+        targetFolder.documents.push({
+          name: displayName,
+          fileUrl: fileUrl,
+          category: `Folder: ${targetFolder.folderName || targetFolder.name}`,
+          uploadedAt: new Date(),
+          uploadedByName: uploaderName
+        });
+      } else if (docType && docType !== 'otherDocs' && docType !== 'customDocument' && client[docType] !== undefined && index === 0) {
+        // Standard document slot (e.g. panCardUrl, itrUrl, propertyDocUrl)
+        if (client[docType]) {
+          client.deletedDocuments.push({
+            docType,
+            docName: `${displayName} (Replaced)`,
+            fileUrl: client[docType],
+            deletedBy: req.user?._id || req.adminId,
+            deletedByName: uploaderName,
+            deletedAt: new Date(),
+            reason: 'Replaced with new document'
+          });
+        }
+        client[docType] = fileUrl;
+      } else {
+        // Custom named standalone document stored separately
+        client.customDocuments.push({
+          name: displayName,
+          fileUrl: fileUrl,
+          category: baseCategory,
+          uploadedAt: new Date(),
+          uploadedByName: uploaderName
+        });
+        client.otherDocs.push(fileUrl);
+      }
+
+      addedDocNames.push(displayName);
+    });
 
     client.editHistory.push({
       editedBy: req.user?._id || req.adminId,
-      editorName: req.user?.name || 'Staff/Admin',
+      editorName: uploaderName,
       editorRole: req.user?.role || 'staff',
-      action: 'Document Added',
-      details: `Added document: ${displayName}`,
+      action: 'Documents Uploaded',
+      details: `Uploaded ${uploadedFiles.length} file(s): ${addedDocNames.join(', ')}`,
       timestamp: new Date()
     });
 
@@ -305,7 +359,7 @@ exports.addClientDocument = async (req, res) => {
     const documents = extractDocuments(client);
     res.json({
       success: true,
-      message: 'Document uploaded successfully',
+      message: `${uploadedFiles.length} document(s) uploaded successfully`,
       data: {
         client,
         documentsList: documents
@@ -327,9 +381,9 @@ exports.softDeleteDocument = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const { docType, fileUrl, docName, reason } = req.body;
-    if (!fileUrl) {
-      return res.status(400).json({ success: false, message: 'fileUrl is required' });
+    const { docType, fileUrl, docName, reason, docId } = req.body;
+    if (!fileUrl && !docId) {
+      return res.status(400).json({ success: false, message: 'fileUrl or docId is required' });
     }
 
     const displayName = docName || 'Document';
@@ -338,12 +392,21 @@ exports.softDeleteDocument = async (req, res) => {
     client.deletedDocuments.push({
       docType: docType || 'document',
       docName: displayName,
-      fileUrl: fileUrl,
+      fileUrl: fileUrl || '',
       deletedBy: req.user?._id || req.adminId,
       deletedByName: req.user?.name || 'Staff/Admin',
       deletedAt: new Date(),
       reason: reason || 'Deleted by staff/admin'
     });
+
+    // Remove from customDocuments if present
+    if (client.customDocuments && client.customDocuments.length > 0) {
+      if (docId) {
+        client.customDocuments = client.customDocuments.filter(d => d._id.toString() !== docId.toString());
+      } else if (fileUrl) {
+        client.customDocuments = client.customDocuments.filter(d => d.fileUrl !== fileUrl);
+      }
+    }
 
     // Remove from active document fields
     if (docType && docType !== 'otherDocs' && client[docType] === fileUrl) {
@@ -352,7 +415,7 @@ exports.softDeleteDocument = async (req, res) => {
       client.otherDocs = client.otherDocs.filter(url => url !== fileUrl);
     } else {
       // Search standard doc fields to clear match
-      const standardFields = ['photoUrl', 'panCardUrl', 'idProofUrl', 'addressProofUrl', 'aadhaarUrl', 'salarySlipUrl', 'bankStatementUrl', 'otherDocUrl'];
+      const standardFields = ['photoUrl', 'panCardUrl', 'idProofUrl', 'addressProofUrl', 'aadhaarUrl', 'salarySlipUrl', 'itrUrl', 'form16Url', 'bankStatementUrl', 'propertyDocUrl', 'otherDocUrl'];
       standardFields.forEach(field => {
         if (client[field] === fileUrl) {
           client[field] = null;
@@ -397,7 +460,7 @@ exports.createCustomFolder = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const { folderName } = req.body;
+    const folderName = req.body.folderName || req.body.name;
     if (!folderName || !folderName.trim()) {
       return res.status(400).json({ success: false, message: 'Folder name is required' });
     }
@@ -406,13 +469,14 @@ exports.createCustomFolder = async (req, res) => {
     if (!client.customFolders) client.customFolders = [];
 
     // Check duplicate name
-    const existing = client.customFolders.find(f => f.folderName.toLowerCase() === trimmedName.toLowerCase());
+    const existing = client.customFolders.find(f => (f.folderName || f.name || '').toLowerCase() === trimmedName.toLowerCase());
     if (existing) {
       return res.status(400).json({ success: false, message: 'A folder with this name already exists' });
     }
 
     client.customFolders.push({
       folderName: trimmedName,
+      name: trimmedName,
       createdBy: req.user?._id || req.adminId,
       createdByName: req.user?.name || 'Staff/Admin',
       createdAt: new Date(),
@@ -690,6 +754,159 @@ exports.getPendingCount = async (req, res) => {
   }
 };
 
+// @desc    Add new pendency to client (continuous tracking)
+// @route   POST /api/clients/:id/pendencies
+// @access  Private
+exports.addPendency = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { title, description } = req.body;
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, message: 'Pendency title is required' });
+    }
+
+    const newPendency = {
+      title: title.trim(),
+      description: description ? description.trim() : '',
+      status: 'Pending',
+      addedAt: new Date(),
+      addedBy: req.user?._id || req.adminId,
+      addedByName: req.user?.name || 'Staff'
+    };
+
+    if (!client.pendencies) client.pendencies = [];
+    client.pendencies.push(newPendency);
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff',
+      editorRole: req.user?.role || 'staff',
+      action: 'Pendency Added',
+      details: `Added pendency: "${newPendency.title}"`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Pendency added successfully',
+      data: client.pendencies
+    });
+  } catch (error) {
+    console.error('Add Pendency Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Update / resolve pendency status
+// @route   PATCH /api/clients/:id/pendencies/:pendencyId
+// @access  Private
+exports.updatePendencyStatus = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const pendency = client.pendencies.id(req.params.pendencyId);
+    if (!pendency) {
+      return res.status(404).json({ success: false, message: 'Pendency not found' });
+    }
+
+    const { status, resolutionNotes, description, title } = req.body;
+    const oldStatus = pendency.status;
+
+    if (title !== undefined) pendency.title = title.trim();
+    if (description !== undefined) pendency.description = description.trim();
+    
+    if (status !== undefined && ['Pending', 'In Progress', 'Resolved'].includes(status)) {
+      pendency.status = status;
+      if (status === 'Resolved') {
+        pendency.resolvedAt = new Date();
+        pendency.resolvedBy = req.user?._id || req.adminId;
+        pendency.resolvedByName = req.user?.name || 'Staff';
+        if (resolutionNotes !== undefined) {
+          pendency.resolutionNotes = resolutionNotes;
+        }
+      } else if (oldStatus === 'Resolved' && status !== 'Resolved') {
+        // Reopened
+        pendency.resolvedAt = null;
+        pendency.resolvedBy = null;
+        pendency.resolvedByName = null;
+      }
+    }
+
+    if (resolutionNotes !== undefined && pendency.status === 'Resolved') {
+      pendency.resolutionNotes = resolutionNotes;
+    }
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff',
+      editorRole: req.user?.role || 'staff',
+      action: 'Pendency Updated',
+      details: `Pendency "${pendency.title}" status changed: ${oldStatus} ➔ ${pendency.status}`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: `Pendency marked as ${pendency.status}`,
+      data: client.pendencies
+    });
+  } catch (error) {
+    console.error('Update Pendency Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Delete pendency (if added by mistake)
+// @route   DELETE /api/clients/:id/pendencies/:pendencyId
+// @access  Private
+exports.deletePendency = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const pendency = client.pendencies.id(req.params.pendencyId);
+    if (!pendency) {
+      return res.status(404).json({ success: false, message: 'Pendency not found' });
+    }
+
+    const pendencyTitle = pendency.title;
+    client.pendencies.pull({ _id: req.params.pendencyId });
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff',
+      editorRole: req.user?.role || 'staff',
+      action: 'Pendency Removed',
+      details: `Removed pendency: "${pendencyTitle}"`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Pendency removed',
+      data: client.pendencies
+    });
+  } catch (error) {
+    console.error('Delete Pendency Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
 // Helper function to extract documents from a profile
 const extractDocuments = (profile) => {
   const docs = [];
@@ -706,8 +923,80 @@ const extractDocuments = (profile) => {
       docType: 'panCardUrl',
       name: 'PAN Card',
       client: profile.fullName,
-      category: 'Identity Proof',
+      category: 'PAN Card',
       file: profile.panCardUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.aadhaarUrl) {
+    docs.push({
+      id: `DOC-AAD-${profile._id.toString().substring(18)}`,
+      docType: 'aadhaarUrl',
+      name: 'Aadhaar Card',
+      client: profile.fullName,
+      category: 'Aadhaar Card',
+      file: profile.aadhaarUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.salarySlipUrl) {
+    docs.push({
+      id: `DOC-SAL-${profile._id.toString().substring(18)}`,
+      docType: 'salarySlipUrl',
+      name: 'Salary Slips',
+      client: profile.fullName,
+      category: 'Salary Slips',
+      file: profile.salarySlipUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.itrUrl) {
+    docs.push({
+      id: `DOC-ITR-${profile._id.toString().substring(18)}`,
+      docType: 'itrUrl',
+      name: 'Income Tax Return (ITR)',
+      client: profile.fullName,
+      category: 'ITR',
+      file: profile.itrUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.form16Url) {
+    docs.push({
+      id: `DOC-F16-${profile._id.toString().substring(18)}`,
+      docType: 'form16Url',
+      name: 'Form 16',
+      client: profile.fullName,
+      category: 'Form 16',
+      file: profile.form16Url,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.bankStatementUrl) {
+    docs.push({
+      id: `DOC-BANK-${profile._id.toString().substring(18)}`,
+      docType: 'bankStatementUrl',
+      name: 'Bank Statements',
+      client: profile.fullName,
+      category: 'Bank Statements',
+      file: profile.bankStatementUrl,
+      uploaded: profile.createdAt,
+      status: docStatus
+    });
+  }
+  if (profile.propertyDocUrl) {
+    docs.push({
+      id: `DOC-PROP-${profile._id.toString().substring(18)}`,
+      docType: 'propertyDocUrl',
+      name: 'Property Documents',
+      client: profile.fullName,
+      category: 'Property Documents',
+      file: profile.propertyDocUrl,
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -716,9 +1005,9 @@ const extractDocuments = (profile) => {
     docs.push({
       id: `DOC-ID-${profile._id.toString().substring(18)}`,
       docType: 'idProofUrl',
-      name: `ID Proof (${profile.idProofType || 'Aadhaar'})`,
+      name: `ID Proof (${profile.idProofType || 'Identity'})`,
       client: profile.fullName,
-      category: 'Identity Proof',
+      category: 'ID Proof',
       file: profile.idProofUrl,
       uploaded: profile.createdAt,
       status: docStatus
@@ -736,38 +1025,14 @@ const extractDocuments = (profile) => {
       status: docStatus
     });
   }
-  if (profile.aadhaarUrl) {
+  if (profile.photoUrl) {
     docs.push({
-      id: `DOC-AAD-${profile._id.toString().substring(18)}`,
-      docType: 'aadhaarUrl',
-      name: 'Aadhaar Card',
+      id: `DOC-PHT-${profile._id.toString().substring(18)}`,
+      docType: 'photoUrl',
+      name: 'Passport Photograph',
       client: profile.fullName,
-      category: 'Identity Proof',
-      file: profile.aadhaarUrl,
-      uploaded: profile.createdAt,
-      status: docStatus
-    });
-  }
-  if (profile.salarySlipUrl) {
-    docs.push({
-      id: `DOC-SAL-${profile._id.toString().substring(18)}`,
-      docType: 'salarySlipUrl',
-      name: 'Salary Slip / ITR',
-      client: profile.fullName,
-      category: 'Financial Document',
-      file: profile.salarySlipUrl,
-      uploaded: profile.createdAt,
-      status: docStatus
-    });
-  }
-  if (profile.bankStatementUrl) {
-    docs.push({
-      id: `DOC-BANK-${profile._id.toString().substring(18)}`,
-      docType: 'bankStatementUrl',
-      name: 'Bank Statement',
-      client: profile.fullName,
-      category: 'Financial Document',
-      file: profile.bankStatementUrl,
+      category: 'Photograph',
+      file: profile.photoUrl,
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -778,7 +1043,7 @@ const extractDocuments = (profile) => {
       docType: 'otherDocUrl',
       name: 'Other Document',
       client: profile.fullName,
-      category: 'Additional',
+      category: 'Other Documents',
       file: profile.otherDocUrl,
       uploaded: profile.createdAt,
       status: docStatus
@@ -790,9 +1055,9 @@ const extractDocuments = (profile) => {
       docs.push({
         id: `DOC-OTH-${profile._id.toString().substring(18)}-${i}`,
         docType: 'otherDocs',
-        name: `Other Document ${i+1}`,
+        name: `Additional Document ${i+1}`,
         client: profile.fullName,
-        category: 'Additional',
+        category: 'Other Documents',
         file: url,
         uploaded: profile.createdAt,
         status: docStatus
@@ -800,16 +1065,32 @@ const extractDocuments = (profile) => {
     });
   }
 
+  if (profile.customDocuments && profile.customDocuments.length > 0) {
+    profile.customDocuments.forEach((doc) => {
+      docs.push({
+        id: doc._id ? doc._id.toString() : `DOC-CUS-${Math.random().toString(36).substring(7)}`,
+        docType: 'customDocument',
+        name: doc.name || 'Document',
+        client: profile.fullName,
+        category: doc.category || 'General Document',
+        file: doc.fileUrl,
+        uploaded: doc.uploadedAt || profile.createdAt,
+        status: docStatus
+      });
+    });
+  }
+
   if (profile.customFolders && profile.customFolders.length > 0) {
     profile.customFolders.forEach((folder) => {
+      const fName = folder.folderName || folder.name || 'Folder';
       if (folder.documents && folder.documents.length > 0) {
         folder.documents.forEach((doc) => {
           docs.push({
             id: doc._id ? doc._id.toString() : `DOC-FLD-${Math.random().toString(36).substring(7)}`,
             docType: 'customFolderDoc',
-            name: `${doc.name} (${folder.name})`,
+            name: `${doc.name} (${fName})`,
             client: profile.fullName,
-            category: folder.name,
+            category: fName,
             file: doc.fileUrl,
             uploaded: doc.uploadedAt || profile.createdAt,
             status: docStatus
