@@ -293,8 +293,53 @@ exports.downloadInvoicePdf = async (req, res) => {
     res.setHeader('Content-Length', pdfBuffer.length);
     return res.send(pdfBuffer);
   } catch (error) {
-    console.error('Error generating Invoice PDF:', error);
+// Generate Invoice PDF on-the-fly directly from request body
+exports.generateInvoicePdfFromData = async (req, res) => {
+  try {
+    const { generateInvoicePDFBuffer } = require('../services/invoicePdfService');
+    const data = req.body || {};
+
+    const bureau = data.bureau || 'TransUnion CIBIL';
+    const pricing = data.pricing || {};
+    const basePrice = pricing.basePrice !== undefined ? Number(pricing.basePrice) : (data.basePrice !== undefined ? Number(data.basePrice) : (data.reportType === 'company_cmr' ? 1500 : bureau.includes('CRIF') ? 450 : bureau.includes('Experian') ? 400 : bureau.includes('Equifax') ? 350 : 500));
+    const discountAmount = pricing.discountAmount !== undefined ? Number(pricing.discountAmount) : (data.discountAmount !== undefined ? Number(data.discountAmount) : 0);
+    const couponCode = pricing.couponCode || data.couponCode || null;
+    const taxableValue = Math.max(0, basePrice - discountAmount);
+    const totalGst = pricing.gstAmount !== undefined ? Number(pricing.gstAmount) : (data.gstAmount !== undefined ? Number(data.gstAmount) : Math.round(taxableValue * 0.18));
+    const cgst = (totalGst / 2).toFixed(2);
+    const sgst = (totalGst / 2).toFixed(2);
+    const totalAmount = pricing.totalAmount || pricing.totalPayable || data.totalAmount || (taxableValue + totalGst);
+
+    const invoiceData = {
+      invoiceNumber: data.invoiceNumber || `KTR/INV/${new Date().getFullYear()}/${Math.floor(10000 + Math.random() * 90000)}`,
+      clientName: data.companyName || data.name || data.clientName || 'Valued Customer',
+      clientMobile: data.mobile || data.clientMobile || 'N/A',
+      pan: data.companyPan || data.pan || 'N/A',
+      serviceName: data.serviceName || (data.reportType === 'company_cmr' ? 'Company CIBIL CMR Report' : `Credit Bureau Report (${bureau})`),
+      serviceDetails: data.serviceDetails || `Comprehensive credit analysis & official report fetch (${bureau})`,
+      bureau,
+      basePrice,
+      discountAmount,
+      couponCode,
+      taxableValue,
+      cgst,
+      sgst,
+      totalAmount,
+      paymentId: data.paymentId || 'N/A',
+      date: data.date || new Date(data.createdAt || Date.now()).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    };
+
+    const pdfBuffer = await generateInvoicePDFBuffer(invoiceData);
+
+    const safeFilename = `Invoice_${(invoiceData.invoiceNumber || 'KTR_CIBIL').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('Error generating Invoice PDF from data:', error);
     return res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
   }
 };
+
 
