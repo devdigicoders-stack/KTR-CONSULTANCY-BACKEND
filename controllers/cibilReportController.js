@@ -293,6 +293,11 @@ exports.downloadInvoicePdf = async (req, res) => {
     res.setHeader('Content-Length', pdfBuffer.length);
     return res.send(pdfBuffer);
   } catch (error) {
+    console.error('Error generating Invoice PDF:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice PDF' });
+  }
+};
+
 // Generate Invoice PDF on-the-fly directly from request body
 exports.generateInvoicePdfFromData = async (req, res) => {
   try {
