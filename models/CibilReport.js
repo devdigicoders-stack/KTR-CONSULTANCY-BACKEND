@@ -69,6 +69,14 @@ const cibilReportSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  pdfPath: {
+    type: String,
+    default: null,
+  },
+  originalPdfLink: {
+    type: String,
+    default: null,
+  },
   paymentId: {
     type: String,
     required: true,
