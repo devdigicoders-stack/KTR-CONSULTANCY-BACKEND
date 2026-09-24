@@ -377,12 +377,10 @@ exports.addClientDocument = async (req, res) => {
 
     uploadedFiles.forEach((file, index) => {
       const fileUrl = `/uploads/${file.filename}`;
-      let displayName = '';
-
-      if (cleanDocName && cleanDocName !== DOC_FRIENDLY_NAMES[docType] && cleanDocName !== docType) {
+      if (cleanDocName) {
         displayName = uploadedFiles.length > 1 ? `${cleanDocName} (Part ${index + 1})` : cleanDocName;
       } else {
-        displayName = file.originalname || cleanDocName || DOC_FRIENDLY_NAMES[docType] || 'Document';
+        displayName = file.originalname || 'Document';
       }
 
       if (targetFolder) {
@@ -393,34 +391,20 @@ exports.addClientDocument = async (req, res) => {
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
-      } else if (docType && STANDARD_DOC_KEYS.includes(docType)) {
-        const friendlyCat = DOC_FRIENDLY_NAMES[docType] || docType;
-        
-        // Populate primary slot if empty
-        if (!client[docType]) {
-          client[docType] = fileUrl;
-        }
-
-        // Always store in customDocuments with docType & category so all files are preserved together
-        client.customDocuments.push({
-          name: displayName,
-          fileUrl: fileUrl,
-          docType: docType,
-          category: friendlyCat,
-          uploadedAt: new Date(),
-          uploadedByName: uploaderName
-        });
       } else {
-        // Standalone Custom Document
+        // Pure Document System: Stored as customDocument with given name
         client.customDocuments.push({
           name: displayName,
           fileUrl: fileUrl,
-          docType: 'customDocument',
-          category: baseCategory,
+          docType: docType || 'document',
+          category: baseCategory || 'General Documents',
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
         client.otherDocs.push(fileUrl);
+        if (docType && STANDARD_DOC_KEYS.includes(docType) && !client[docType]) {
+          client[docType] = fileUrl;
+        }
       }
 
       addedDocNames.push(displayName);
