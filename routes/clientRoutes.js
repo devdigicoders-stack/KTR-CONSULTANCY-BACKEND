@@ -26,7 +26,9 @@ const {
   deleteFolderDocument,
   addPendency,
   updatePendencyStatus,
-  deletePendency
+  deletePendency,
+  getPublicSharedClientDocs,
+  updateDocumentOrder
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -90,10 +92,17 @@ router.route('/pending/count')
 router.route('/')
   .get(protect, getAllClients);
 
+// Public Shared Documents Route (No login required)
+router.route('/shared/:id')
+  .get(getPublicSharedClientDocs);
+
 router.route('/:id')
   .get(protect, getClientById)
   .put(protect, uploadFields, updateClient)
   .delete(protect, deleteClient);
+
+router.route('/:id/document-order')
+  .put(protect, updateDocumentOrder);
 
 // Setup Multer multi/single document upload handler
 const docUploadMiddleware = upload.fields([

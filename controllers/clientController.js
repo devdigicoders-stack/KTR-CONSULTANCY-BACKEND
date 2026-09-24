@@ -112,6 +112,44 @@ exports.getClientById = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
+    // Auto-heal empty standard document fields from customDocuments if available
+    const STANDARD_DOC_FIELDS = [
+      'propertyDocUrl', 'bankStatementUrl', 'salarySlipUrl', 'panCardUrl',
+      'aadhaarUrl', 'itrUrl', 'form16Url', 'idProofUrl', 'addressProofUrl',
+      'photoUrl', 'otherDocUrl'
+    ];
+    let clientModified = false;
+    if (client.customDocuments && client.customDocuments.length > 0) {
+      client.customDocuments.forEach(cd => {
+        if (!cd.docType) {
+          if (cd.category === 'propertyDocUrl' || cd.category === 'Property Papers' || (cd.name && cd.name.toLowerCase().includes('property')) || (cd.name && cd.name.toLowerCase().includes('registry'))) {
+            cd.docType = 'propertyDocUrl';
+            clientModified = true;
+          } else if (cd.category === 'bankStatementUrl' || cd.category === 'Bank Statements') {
+            cd.docType = 'bankStatementUrl';
+            clientModified = true;
+          } else if (cd.category === 'salarySlipUrl' || cd.category === 'Salary Slips') {
+            cd.docType = 'salarySlipUrl';
+            clientModified = true;
+          }
+        }
+      });
+
+      STANDARD_DOC_FIELDS.forEach(fieldKey => {
+        if (!client[fieldKey]) {
+          const match = client.customDocuments.find(cd => cd.docType === fieldKey || cd.category === fieldKey);
+          if (match && match.fileUrl) {
+            client[fieldKey] = match.fileUrl;
+            clientModified = true;
+          }
+        }
+      });
+
+      if (clientModified) {
+        await client.save();
+      }
+    }
+
     // Extract Documents
     const documents = extractDocuments(client);
 
@@ -216,6 +254,8 @@ exports.updateClient = async (req, res) => {
       { key: 'aadhaarNumber', label: 'Aadhaar Number' },
       { key: 'occupation', label: 'Occupation' },
       { key: 'loanAmount', label: 'Loan Amount' },
+      { key: 'caseType', label: 'Case Type' },
+      { key: 'loanType', label: 'Loan Type' },
       { key: 'addressLine1', label: 'Address' },
       { key: 'status', label: 'Status' }
     ];
@@ -280,7 +320,8 @@ exports.addClientDocument = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const { docType, docName, category, folderId } = req.body;
+    const { docType, docName, documentName, category, folderId, notes } = req.body;
+    const cleanDocName = (docName || documentName || '').trim();
     const baseCategory = category || (docType && docType !== 'otherDocs' && docType !== 'customDocument' ? docType : 'Document');
     const uploaderName = req.user?.name || 'Staff';
     const addedDocNames = [];
@@ -289,23 +330,59 @@ exports.addClientDocument = async (req, res) => {
     if (!client.otherDocs) client.otherDocs = [];
 
     // If target is a custom folder
-    let targetFolder = null;
-    if (folderId && client.customFolders) {
-      targetFolder = client.customFolders.id(folderId);
+    let targetFolderId = folderId;
+    if (!targetFolderId && docType && typeof docType === 'string' && docType.startsWith('folder_')) {
+      targetFolderId = docType.replace('folder_', '');
     }
+
+    let targetFolder = null;
+    if (targetFolderId && client.customFolders) {
+      try {
+        targetFolder = client.customFolders.id(targetFolderId);
+      } catch (e) {
+        targetFolder = null;
+      }
+      if (!targetFolder) {
+        targetFolder = client.customFolders.find(f => f._id && f._id.toString() === targetFolderId.toString());
+      }
+    }
+
+    const STANDARD_DOC_KEYS = [
+      'panCardUrl',
+      'aadhaarUrl',
+      'salarySlipUrl',
+      'bankStatementUrl',
+      'propertyDocUrl',
+      'itrUrl',
+      'form16Url',
+      'idProofUrl',
+      'addressProofUrl',
+      'photoUrl',
+      'otherDocUrl'
+    ];
+
+    const DOC_FRIENDLY_NAMES = {
+      propertyDocUrl: 'Property Papers',
+      bankStatementUrl: 'Bank Statements',
+      salarySlipUrl: 'Salary Slips',
+      itrUrl: 'Income Tax Return (ITR)',
+      form16Url: 'Form 16',
+      panCardUrl: 'PAN Card',
+      aadhaarUrl: 'Aadhaar Card',
+      idProofUrl: 'ID Proof',
+      addressProofUrl: 'Address Proof',
+      photoUrl: 'Photograph',
+      otherDocUrl: 'Other Document'
+    };
 
     uploadedFiles.forEach((file, index) => {
       const fileUrl = `/uploads/${file.filename}`;
       let displayName = '';
 
-      if (uploadedFiles.length === 1) {
-        displayName = docName || file.originalname || 'Document';
+      if (cleanDocName && cleanDocName !== DOC_FRIENDLY_NAMES[docType] && cleanDocName !== docType) {
+        displayName = uploadedFiles.length > 1 ? `${cleanDocName} (Part ${index + 1})` : cleanDocName;
       } else {
-        if (docName) {
-          displayName = `${docName} (Part ${index + 1})`;
-        } else {
-          displayName = file.originalname;
-        }
+        displayName = file.originalname || cleanDocName || DOC_FRIENDLY_NAMES[docType] || 'Document';
       }
 
       if (targetFolder) {
@@ -316,25 +393,29 @@ exports.addClientDocument = async (req, res) => {
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
-      } else if (docType && docType !== 'otherDocs' && docType !== 'customDocument' && client[docType] !== undefined && index === 0) {
-        // Standard document slot (e.g. panCardUrl, itrUrl, propertyDocUrl)
-        if (client[docType]) {
-          client.deletedDocuments.push({
-            docType,
-            docName: `${displayName} (Replaced)`,
-            fileUrl: client[docType],
-            deletedBy: req.user?._id || req.adminId,
-            deletedByName: uploaderName,
-            deletedAt: new Date(),
-            reason: 'Replaced with new document'
-          });
+      } else if (docType && STANDARD_DOC_KEYS.includes(docType)) {
+        const friendlyCat = DOC_FRIENDLY_NAMES[docType] || docType;
+        
+        // Populate primary slot if empty
+        if (!client[docType]) {
+          client[docType] = fileUrl;
         }
-        client[docType] = fileUrl;
-      } else {
-        // Custom named standalone document stored separately
+
+        // Always store in customDocuments with docType & category so all files are preserved together
         client.customDocuments.push({
           name: displayName,
           fileUrl: fileUrl,
+          docType: docType,
+          category: friendlyCat,
+          uploadedAt: new Date(),
+          uploadedByName: uploaderName
+        });
+      } else {
+        // Standalone Custom Document
+        client.customDocuments.push({
+          name: displayName,
+          fileUrl: fileUrl,
+          docType: 'customDocument',
           category: baseCategory,
           uploadedAt: new Date(),
           uploadedByName: uploaderName
@@ -411,6 +492,13 @@ exports.softDeleteDocument = async (req, res) => {
     // Remove from active document fields
     if (docType && docType !== 'otherDocs' && client[docType] === fileUrl) {
       client[docType] = null;
+      // Auto-promote next remaining file for this docType if available
+      const remainingForDocType = (client.customDocuments || []).filter(
+        d => (d.docType === docType || d.category === docType) && d.fileUrl !== fileUrl
+      );
+      if (remainingForDocType.length > 0) {
+        client[docType] = remainingForDocType[0].fileUrl;
+      }
     } else if (docType === 'otherDocs' || (client.otherDocs && client.otherDocs.includes(fileUrl))) {
       client.otherDocs = client.otherDocs.filter(url => url !== fileUrl);
     } else {
@@ -419,6 +507,12 @@ exports.softDeleteDocument = async (req, res) => {
       standardFields.forEach(field => {
         if (client[field] === fileUrl) {
           client[field] = null;
+          const remaining = (client.customDocuments || []).filter(
+            d => (d.docType === field || d.category === field) && d.fileUrl !== fileUrl
+          );
+          if (remaining.length > 0) {
+            client[field] = remaining[0].fileUrl;
+          }
         }
       });
     }
@@ -514,12 +608,23 @@ exports.deleteCustomFolder = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const folder = client.customFolders.id(req.params.folderId);
+    let folder = null;
+    if (client.customFolders) {
+      try {
+        folder = client.customFolders.id(req.params.folderId);
+      } catch (e) {
+        folder = null;
+      }
+      if (!folder) {
+        folder = client.customFolders.find(f => f._id && f._id.toString() === req.params.folderId.toString());
+      }
+    }
+
     if (!folder) {
       return res.status(404).json({ success: false, message: 'Folder not found' });
     }
 
-    const folderName = folder.folderName;
+    const folderName = folder.folderName || folder.name || 'Folder';
 
     // Backup contained files into deletedDocuments
     if (folder.documents && folder.documents.length > 0) {
@@ -536,7 +641,11 @@ exports.deleteCustomFolder = async (req, res) => {
       });
     }
 
-    client.customFolders.pull({ _id: req.params.folderId });
+    if (client.customFolders.pull) {
+      client.customFolders.pull({ _id: req.params.folderId });
+    } else {
+      client.customFolders = client.customFolders.filter(f => f._id && f._id.toString() !== req.params.folderId.toString());
+    }
 
     client.editHistory.push({
       editedBy: req.user?._id || req.adminId,
@@ -569,34 +678,65 @@ exports.uploadFolderDocument = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const folder = client.customFolders.id(req.params.folderId);
+    let folder = null;
+    if (client.customFolders) {
+      try {
+        folder = client.customFolders.id(req.params.folderId);
+      } catch (e) {
+        folder = null;
+      }
+      if (!folder) {
+        folder = client.customFolders.find(f => f._id && f._id.toString() === req.params.folderId.toString());
+      }
+    }
+
     if (!folder) {
       return res.status(404).json({ success: false, message: 'Folder not found' });
     }
 
-    if (!req.file) {
+    let uploadedFiles = [];
+    if (req.files && req.files.files) {
+      uploadedFiles = req.files.files;
+    } else if (req.files && req.files.file) {
+      uploadedFiles = req.files.file;
+    } else if (req.file) {
+      uploadedFiles = [req.file];
+    }
+
+    if (uploadedFiles.length === 0) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const docName = req.body.docName || req.file.originalname;
-    const fileUrl = `/uploads/${req.file.filename}`;
+    const cleanDocName = (req.body.documentName || req.body.docName || '').trim();
+    const uploaderName = req.user?.name || 'Staff/Admin';
+    const folderTitle = folder.folderName || folder.name || 'Folder';
+    const addedNames = [];
 
-    const newDoc = {
-      name: docName,
-      fileUrl: fileUrl,
-      category: `Folder: ${folder.folderName}`,
-      uploadedAt: new Date(),
-      uploadedByName: req.user?.name || 'Staff/Admin'
-    };
+    uploadedFiles.forEach((file, index) => {
+      let displayName = '';
+      if (uploadedFiles.length === 1) {
+        displayName = cleanDocName || file.originalname || 'Document';
+      } else {
+        displayName = cleanDocName ? `${cleanDocName} (Part ${index + 1})` : file.originalname;
+      }
+      const fileUrl = `/uploads/${file.filename}`;
 
-    folder.documents.push(newDoc);
+      folder.documents.push({
+        name: displayName,
+        fileUrl: fileUrl,
+        category: `Folder: ${folderTitle}`,
+        uploadedAt: new Date(),
+        uploadedByName: uploaderName
+      });
+      addedNames.push(displayName);
+    });
 
     client.editHistory.push({
       editedBy: req.user?._id || req.adminId,
-      editorName: req.user?.name || 'Staff/Admin',
+      editorName: uploaderName,
       editorRole: req.user?.role || 'staff',
       action: 'File Uploaded to Folder',
-      details: `Uploaded "${docName}" into folder "${folder.folderName}"`,
+      details: `Uploaded ${uploadedFiles.length} file(s) [${addedNames.join(', ')}] into folder "${folderTitle}"`,
       timestamp: new Date()
     });
 
@@ -604,9 +744,10 @@ exports.uploadFolderDocument = async (req, res) => {
 
     res.json({
       success: true,
-      message: `File uploaded to folder "${folder.folderName}"`,
+      message: `${uploadedFiles.length} file(s) uploaded to folder "${folderTitle}"`,
       data: {
         folder,
+        client,
         documentsList: extractDocuments(client)
       }
     });
@@ -626,38 +767,65 @@ exports.deleteFolderDocument = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const folder = client.customFolders.id(req.params.folderId);
+    let folder = null;
+    if (client.customFolders) {
+      try {
+        folder = client.customFolders.id(req.params.folderId);
+      } catch (e) {
+        folder = null;
+      }
+      if (!folder) {
+        folder = client.customFolders.find(f => f._id && f._id.toString() === req.params.folderId.toString());
+      }
+    }
+
     if (!folder) {
       return res.status(404).json({ success: false, message: 'Folder not found' });
     }
 
-    const doc = folder.documents.id(req.params.docId);
+    let doc = null;
+    if (folder.documents) {
+      try {
+        doc = folder.documents.id(req.params.docId);
+      } catch (e) {
+        doc = null;
+      }
+      if (!doc) {
+        doc = folder.documents.find(d => d._id && d._id.toString() === req.params.docId.toString());
+      }
+    }
+
     if (!doc) {
       return res.status(404).json({ success: false, message: 'Document not found in folder' });
     }
 
     const docName = doc.name;
     const fileUrl = doc.fileUrl;
+    const folderTitle = folder.folderName || folder.name || 'Folder';
 
     // Backup to deletedDocuments
     client.deletedDocuments.push({
       docType: 'customFolderFile',
-      docName: `${docName} (Folder: ${folder.folderName})`,
+      docName: `${docName} (Folder: ${folderTitle})`,
       fileUrl: fileUrl,
       deletedBy: req.user?._id || req.adminId,
       deletedByName: req.user?.name || 'Staff/Admin',
       deletedAt: new Date(),
-      reason: req.body.reason || `Deleted from folder "${folder.folderName}"`
+      reason: req.body.reason || `Deleted from folder "${folderTitle}"`
     });
 
-    folder.documents.pull({ _id: req.params.docId });
+    if (folder.documents.pull) {
+      folder.documents.pull({ _id: req.params.docId });
+    } else {
+      folder.documents = folder.documents.filter(d => d._id && d._id.toString() !== req.params.docId.toString());
+    }
 
     client.editHistory.push({
       editedBy: req.user?._id || req.adminId,
       editorName: req.user?.name || 'Staff/Admin',
       editorRole: req.user?.role || 'staff',
       action: 'File Soft-Deleted from Folder',
-      details: `Deleted "${docName}" from folder "${folder.folderName}" (Backed up in DB)`,
+      details: `Deleted "${docName}" from folder "${folderTitle}" (Backed up in DB)`,
       timestamp: new Date()
     });
 
@@ -665,9 +833,10 @@ exports.deleteFolderDocument = async (req, res) => {
 
     res.json({
       success: true,
-      message: `File deleted from folder "${folder.folderName}"`,
+      message: `Document "${docName}" deleted from folder "${folderTitle}"`,
       data: {
         folder,
+        client,
         documentsList: extractDocuments(client)
       }
     });
@@ -1067,6 +1236,7 @@ const extractDocuments = (profile) => {
 
   if (profile.customDocuments && profile.customDocuments.length > 0) {
     profile.customDocuments.forEach((doc) => {
+      if (docs.some(d => d.file === doc.fileUrl)) return;
       docs.push({
         id: doc._id ? doc._id.toString() : `DOC-CUS-${Math.random().toString(36).substring(7)}`,
         docType: 'customDocument',
@@ -1100,6 +1270,21 @@ const extractDocuments = (profile) => {
     });
   }
   
+  if (profile.documentOrder && Array.isArray(profile.documentOrder) && profile.documentOrder.length > 0) {
+    const order = profile.documentOrder;
+    docs.sort((a, b) => {
+      const getRank = (item) => {
+        let idx = order.indexOf(item.docType);
+        if (idx !== -1) return idx;
+        if (item.id && order.indexOf(item.id) !== -1) return order.indexOf(item.id);
+        if (item.id && order.indexOf(`custom_${item.id}`) !== -1) return order.indexOf(`custom_${item.id}`);
+        if (item.category && order.indexOf(item.category) !== -1) return order.indexOf(item.category);
+        return 999;
+      };
+      return getRank(a) - getRank(b);
+    });
+  }
+
   return docs;
 };
 
@@ -1254,5 +1439,85 @@ exports.getDashboardStats = async (req, res) => {
   } catch (error) {
     console.error('Dashboard Stats Error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// @desc    Get client documents for public sharing (No login required)
+// @route   GET /api/clients/shared/:id
+// @access  Public
+exports.getPublicSharedClientDocs = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Documents not found or link has expired.' });
+    }
+
+    const documentsList = extractDocuments(client);
+
+    res.json({
+      success: true,
+      data: {
+        _id: client._id,
+        fullName: client.fullName,
+        applicationId: client.applicationId || client.refId || `KTR-${client._id.toString().substring(18).toUpperCase()}`,
+        caseType: client.caseType || client.loanType || 'Financial / Legal Documentation',
+        loanAmount: client.loanAmount || 0,
+        createdAt: client.createdAt,
+        updatedAt: client.updatedAt,
+        documentsList,
+        customFolders: (client.customFolders || []).map(f => ({
+          _id: f._id,
+          folderName: f.folderName || f.name,
+          description: f.description,
+          documents: f.documents || []
+        })),
+        customDocuments: client.customDocuments || [],
+        panCardUrl: client.panCardUrl,
+        aadhaarUrl: client.aadhaarUrl,
+        salarySlipUrl: client.salarySlipUrl,
+        itrUrl: client.itrUrl,
+        form16Url: client.form16Url,
+        bankStatementUrl: client.bankStatementUrl,
+        propertyDocUrl: client.propertyDocUrl,
+        otherDocUrl: client.otherDocUrl,
+        otherDocs: client.otherDocs || [],
+        documentOrder: client.documentOrder || []
+      }
+    });
+  } catch (error) {
+    console.error('Get Public Shared Docs Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Update client custom document serial order
+// @route   PUT /api/clients/:id/document-order
+// @access  Private
+exports.updateDocumentOrder = async (req, res) => {
+  try {
+    const { documentOrder } = req.body;
+    if (!Array.isArray(documentOrder)) {
+      return res.status(400).json({ success: false, message: 'documentOrder must be an array of keys' });
+    }
+
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    client.documentOrder = documentOrder;
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Document serial order saved successfully',
+      data: {
+        documentOrder: client.documentOrder,
+        documentsList: extractDocuments(client)
+      }
+    });
+  } catch (error) {
+    console.error('Update Document Order Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
