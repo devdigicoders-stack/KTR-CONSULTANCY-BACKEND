@@ -377,11 +377,7 @@ exports.addClientDocument = async (req, res) => {
 
     uploadedFiles.forEach((file, index) => {
       const fileUrl = `/uploads/${file.filename}`;
-      if (cleanDocName) {
-        displayName = uploadedFiles.length > 1 ? `${cleanDocName} (Part ${index + 1})` : cleanDocName;
-      } else {
-        displayName = file.originalname || 'Document';
-      }
+      let displayName = cleanDocName || file.originalname || 'Document';
 
       if (targetFolder) {
         targetFolder.documents.push({
@@ -697,12 +693,7 @@ exports.uploadFolderDocument = async (req, res) => {
     const addedNames = [];
 
     uploadedFiles.forEach((file, index) => {
-      let displayName = '';
-      if (uploadedFiles.length === 1) {
-        displayName = cleanDocName || file.originalname || 'Document';
-      } else {
-        displayName = cleanDocName ? `${cleanDocName} (Part ${index + 1})` : file.originalname;
-      }
+      const displayName = cleanDocName || file.originalname || 'Document';
       const fileUrl = `/uploads/${file.filename}`;
 
       folder.documents.push({
