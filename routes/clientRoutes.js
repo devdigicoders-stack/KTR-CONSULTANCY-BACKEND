@@ -109,7 +109,7 @@ router.route('/:id/document-order')
 
 // Setup Multer multi/single document upload handler
 const docUploadMiddleware = upload.fields([
-  { name: 'files', maxCount: 20 },
+  { name: 'files', maxCount: 100 },
   { name: 'file', maxCount: 1 }
 ]);
 

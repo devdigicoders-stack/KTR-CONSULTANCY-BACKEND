@@ -52,7 +52,7 @@ function generateInvoicePDFBuffer(invoiceData) {
       // Company Name & Subtitle
       doc.fillColor(brandDark).fontSize(16).font('Helvetica-Bold').text('KTR CONSULTANTS', 110, 52);
       doc.fillColor(brandGold).fontSize(9).font('Helvetica-Bold').text('FINANCIAL & CREDIT ADVISORY SERVICES', 110, 72);
-      doc.fillColor(textGray).fontSize(8).font('Helvetica').text('Website: www.ktrconsultants.in  |  Email: info@ktrconsultants.in  |  Helpline: +91 99186 99696', 110, 86);
+      doc.fillColor(textGray).fontSize(8).font('Helvetica').text('Website: www.ktrconsultants.in  |  Email: info@ktrconsultants.in', 110, 86);
 
       // Invoice Badge on Top Right
       doc.rect(400, 52, 140, 22).fill(brandDark);
