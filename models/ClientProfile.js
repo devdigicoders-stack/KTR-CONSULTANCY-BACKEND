@@ -106,6 +106,7 @@ const clientProfileSchema = new mongoose.Schema({
     fileUrl: { type: String, required: true },
     docType: { type: String },
     category: { type: String, default: 'Document' },
+    notes: { type: String, default: '' },
     uploadedAt: { type: Date, default: Date.now },
     uploadedByName: { type: String }
   }],
@@ -120,6 +121,7 @@ const clientProfileSchema = new mongoose.Schema({
       name: { type: String, required: true },
       fileUrl: { type: String, required: true },
       category: { type: String, default: 'Custom File' },
+      notes: { type: String, default: '' },
       uploadedAt: { type: Date, default: Date.now },
       uploadedByName: { type: String }
     }]
@@ -135,6 +137,13 @@ const clientProfileSchema = new mongoose.Schema({
     deletedAt: { type: Date, default: Date.now },
     reason: { type: String }
   }],
+
+  // Custom document notes per document title / key
+  documentNotes: {
+    type: Map,
+    of: String,
+    default: () => new Map()
+  },
 
   // Custom document serial order chosen by user
   documentOrder: [{ type: String }],

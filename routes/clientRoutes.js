@@ -28,7 +28,8 @@ const {
   updatePendencyStatus,
   deletePendency,
   getPublicSharedClientDocs,
-  updateDocumentOrder
+  updateDocumentOrder,
+  updateDocumentNotes
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -106,6 +107,9 @@ router.route('/:id')
 
 router.route('/:id/document-order')
   .put(protect, updateDocumentOrder);
+
+router.route('/:id/document-notes')
+  .put(protect, updateDocumentNotes);
 
 // Setup Multer multi/single document upload handler
 const docUploadMiddleware = upload.fields([

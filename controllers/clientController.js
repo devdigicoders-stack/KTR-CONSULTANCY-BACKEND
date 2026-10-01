@@ -384,6 +384,7 @@ exports.addClientDocument = async (req, res) => {
           name: displayName,
           fileUrl: fileUrl,
           category: `Folder: ${targetFolder.folderName || targetFolder.name}`,
+          notes: notes || '',
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
@@ -394,6 +395,7 @@ exports.addClientDocument = async (req, res) => {
           fileUrl: fileUrl,
           docType: docType || 'document',
           category: baseCategory || 'General Documents',
+          notes: notes || '',
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
@@ -401,6 +403,11 @@ exports.addClientDocument = async (req, res) => {
         if (docType && STANDARD_DOC_KEYS.includes(docType) && !client[docType]) {
           client[docType] = fileUrl;
         }
+      }
+
+      if (notes && cleanDocName) {
+        if (!client.documentNotes) client.documentNotes = new Map();
+        client.documentNotes.set(cleanDocName, notes);
       }
 
       addedDocNames.push(displayName);
@@ -1456,7 +1463,8 @@ exports.getPublicSharedClientDocs = async (req, res) => {
         propertyDocUrl: client.propertyDocUrl,
         otherDocUrl: client.otherDocUrl,
         otherDocs: client.otherDocs || [],
-        documentOrder: client.documentOrder || []
+        documentOrder: client.documentOrder || [],
+        documentNotes: client.documentNotes ? Object.fromEntries(client.documentNotes) : {}
       }
     });
   } catch (error) {
@@ -1493,6 +1501,71 @@ exports.updateDocumentOrder = async (req, res) => {
     });
   } catch (error) {
     console.error('Update Document Order Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Update document notes for client
+// @route   PUT /api/clients/:id/document-notes
+// @access  Private
+exports.updateDocumentNotes = async (req, res) => {
+  try {
+    const { docName, notes, docId, fileUrl } = req.body;
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const noteText = (notes || '').trim();
+
+    if (!client.documentNotes) {
+      client.documentNotes = new Map();
+    }
+
+    if (docName) {
+      client.documentNotes.set(docName.trim(), noteText);
+    }
+
+    // Update in customDocuments if found
+    if (client.customDocuments && client.customDocuments.length > 0) {
+      client.customDocuments.forEach(cd => {
+        if ((docId && cd._id?.toString() === docId.toString()) || 
+            (docName && cd.name?.trim() === docName.trim()) ||
+            (fileUrl && cd.fileUrl === fileUrl)) {
+          cd.notes = noteText;
+        }
+      });
+    }
+
+    // Update in customFolders if found
+    if (client.customFolders && client.customFolders.length > 0) {
+      client.customFolders.forEach(f => {
+        (f.documents || []).forEach(fDoc => {
+          if ((docId && fDoc._id?.toString() === docId.toString()) || 
+              (docName && fDoc.name?.trim() === docName.trim()) ||
+              (fileUrl && fDoc.fileUrl === fileUrl)) {
+            fDoc.notes = noteText;
+          }
+        });
+      });
+    }
+
+    client.markModified('documentNotes');
+    client.markModified('customDocuments');
+    client.markModified('customFolders');
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Document note updated successfully',
+      data: {
+        docName,
+        notes: noteText,
+        client
+      }
+    });
+  } catch (error) {
+    console.error('Update Document Notes Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
