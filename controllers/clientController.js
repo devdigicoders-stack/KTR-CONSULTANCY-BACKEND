@@ -1436,12 +1436,69 @@ exports.getDashboardStats = async (req, res) => {
 // @access  Public
 exports.getPublicSharedClientDocs = async (req, res) => {
   try {
-    const client = await ClientProfile.findById(req.params.id);
+    const rawId = req.params.id;
+    let client = null;
+
+    if (mongoose.Types.ObjectId.isValid(rawId)) {
+      client = await ClientProfile.findById(rawId);
+    }
+    
+    if (!client) {
+      client = await ClientProfile.findOne({
+        $or: [
+          { applicationId: rawId },
+          { refId: rawId },
+          { _id: rawId.length === 24 ? rawId : null }
+        ].filter(Boolean)
+      });
+    }
+
     if (!client) {
       return res.status(404).json({ success: false, message: 'Documents not found or link has expired.' });
     }
 
-    const documentsList = extractDocuments(client);
+    // Helper to sanitize URLs by stripping old localhost or external host prefixes for uploads
+    const cleanDocUrl = (url) => {
+      if (!url || typeof url !== 'string') return url;
+      const trimmed = url.trim();
+      if (trimmed.includes('/uploads/')) {
+        return trimmed.substring(trimmed.indexOf('/uploads/'));
+      }
+      if (trimmed.includes('uploads/')) {
+        return '/' + trimmed.substring(trimmed.indexOf('uploads/'));
+      }
+      return trimmed;
+    };
+
+    const documentsList = extractDocuments(client).map(doc => ({
+      ...doc,
+      url: cleanDocUrl(doc.url)
+    }));
+
+    const sanitizedCustomDocs = (client.customDocuments || []).map(cd => ({
+      _id: cd._id,
+      name: cd.name,
+      fileUrl: cleanDocUrl(cd.fileUrl),
+      docType: cd.docType,
+      category: cd.category,
+      notes: cd.notes,
+      uploadedAt: cd.uploadedAt,
+      uploadedByName: cd.uploadedByName
+    }));
+
+    const sanitizedFolders = (client.customFolders || []).map(f => ({
+      _id: f._id,
+      folderName: f.folderName || f.name,
+      description: f.description,
+      documents: (f.documents || []).map(d => ({
+        _id: d._id,
+        name: d.name,
+        fileUrl: cleanDocUrl(d.fileUrl),
+        notes: d.notes,
+        uploadedAt: d.uploadedAt,
+        uploadedByName: d.uploadedByName
+      }))
+    }));
 
     res.json({
       success: true,
@@ -1454,22 +1511,20 @@ exports.getPublicSharedClientDocs = async (req, res) => {
         createdAt: client.createdAt,
         updatedAt: client.updatedAt,
         documentsList,
-        customFolders: (client.customFolders || []).map(f => ({
-          _id: f._id,
-          folderName: f.folderName || f.name,
-          description: f.description,
-          documents: f.documents || []
-        })),
-        customDocuments: client.customDocuments || [],
-        panCardUrl: client.panCardUrl,
-        aadhaarUrl: client.aadhaarUrl,
-        salarySlipUrl: client.salarySlipUrl,
-        itrUrl: client.itrUrl,
-        form16Url: client.form16Url,
-        bankStatementUrl: client.bankStatementUrl,
-        propertyDocUrl: client.propertyDocUrl,
-        otherDocUrl: client.otherDocUrl,
-        otherDocs: client.otherDocs || [],
+        customFolders: sanitizedFolders,
+        customDocuments: sanitizedCustomDocs,
+        panCardUrl: cleanDocUrl(client.panCardUrl),
+        aadhaarUrl: cleanDocUrl(client.aadhaarUrl),
+        salarySlipUrl: cleanDocUrl(client.salarySlipUrl),
+        itrUrl: cleanDocUrl(client.itrUrl),
+        form16Url: cleanDocUrl(client.form16Url),
+        bankStatementUrl: cleanDocUrl(client.bankStatementUrl),
+        propertyDocUrl: cleanDocUrl(client.propertyDocUrl),
+        otherDocUrl: cleanDocUrl(client.otherDocUrl),
+        photoUrl: cleanDocUrl(client.photoUrl),
+        idProofUrl: cleanDocUrl(client.idProofUrl),
+        addressProofUrl: cleanDocUrl(client.addressProofUrl),
+        otherDocs: (client.otherDocs || []).map(cleanDocUrl),
         documentOrder: client.documentOrder || [],
         documentNotes: client.documentNotes ? Object.fromEntries(client.documentNotes) : {}
       }
