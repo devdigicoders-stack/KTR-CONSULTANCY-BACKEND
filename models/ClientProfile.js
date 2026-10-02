@@ -60,6 +60,7 @@ const clientProfileSchema = new mongoose.Schema({
   referrerMobile: { type: String },
   relationship: { type: String },
   notes: { type: String },
+  caseNotes: { type: String },
 
   // Documents (URLs / File Paths)
   photoUrl: { type: String },

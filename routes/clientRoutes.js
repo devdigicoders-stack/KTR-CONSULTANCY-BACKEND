@@ -51,7 +51,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 200 * 1024 * 1024 } // 200MB limit
+  limits: { fileSize: 1024 * 1024 * 1024 } // 1GB per file limit (Supports 1KB to 500MB+ files)
 });
 
 // Define upload fields
@@ -67,7 +67,7 @@ const uploadFields = upload.fields([
   { name: 'bankStatementUrl', maxCount: 1 },
   { name: 'propertyDocUrl', maxCount: 1 },
   { name: 'otherDocUrl', maxCount: 1 },
-  { name: 'otherDocs', maxCount: 10 }
+  { name: 'otherDocs', maxCount: 100 }
 ]);
 
 // User Routes
@@ -111,14 +111,27 @@ router.route('/:id/document-order')
 router.route('/:id/document-notes')
   .put(protect, updateDocumentNotes);
 
-// Setup Multer multi/single document upload handler
+// Setup Multer multi/single document upload handler (up to 200 documents per batch)
 const docUploadMiddleware = upload.fields([
-  { name: 'files', maxCount: 100 },
-  { name: 'file', maxCount: 1 }
+  { name: 'files', maxCount: 200 },
+  { name: 'file', maxCount: 50 }
 ]);
 
+const handleDocUpload = (req, res, next) => {
+  docUploadMiddleware(req, res, (err) => {
+    if (err) {
+      console.error('Multer Doc Upload Error:', err);
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ success: false, message: 'File size exceeds maximum allowed limit (1GB).' });
+      }
+      return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
+    }
+    next();
+  });
+};
+
 router.route('/:id/documents')
-  .post(protect, docUploadMiddleware, addClientDocument)
+  .post(protect, handleDocUpload, addClientDocument)
   .delete(protect, softDeleteDocument);
 
 router.route('/:id/folders')
@@ -128,7 +141,7 @@ router.route('/:id/folders/:folderId')
   .delete(protect, deleteCustomFolder);
 
 router.route('/:id/folders/:folderId/documents')
-  .post(protect, docUploadMiddleware, uploadFolderDocument);
+  .post(protect, handleDocUpload, uploadFolderDocument);
 
 router.route('/:id/folders/:folderId/documents/:docId')
   .delete(protect, deleteFolderDocument);

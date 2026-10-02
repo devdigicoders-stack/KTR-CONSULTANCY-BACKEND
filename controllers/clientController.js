@@ -44,13 +44,16 @@ exports.submitProfile = async (req, res) => {
       };
     }
 
+    const notesContent = req.body.caseNotes || req.body.notes || '';
     const profileData = {
       ...req.body,
       ...docUpdates,
       hasCoApplicant: req.body.hasCoApplicant === 'true' || req.body.hasCoApplicant === true,
       ...(coApplicantObj ? { coApplicant: coApplicantObj } : {}),
       user: userId,
-      status: 'Pending'
+      status: 'Pending',
+      notes: notesContent,
+      caseNotes: notesContent
     };
 
     // Create new profile always (1-to-many relationship)
@@ -256,6 +259,8 @@ exports.updateClient = async (req, res) => {
       { key: 'loanAmount', label: 'Loan Amount' },
       { key: 'caseType', label: 'Case Type' },
       { key: 'loanType', label: 'Loan Type' },
+      { key: 'notes', label: 'Case Notes' },
+      { key: 'caseNotes', label: 'Case Notes' },
       { key: 'addressLine1', label: 'Address' },
       { key: 'status', label: 'Status' }
     ];
@@ -399,7 +404,6 @@ exports.addClientDocument = async (req, res) => {
           uploadedAt: new Date(),
           uploadedByName: uploaderName
         });
-        client.otherDocs.push(fileUrl);
         if (docType && STANDARD_DOC_KEYS.includes(docType) && !client[docType]) {
           client[docType] = fileUrl;
         }
@@ -1201,21 +1205,7 @@ const extractDocuments = (profile) => {
     });
   }
   
-  if (profile.otherDocs && profile.otherDocs.length > 0) {
-    profile.otherDocs.forEach((url, i) => {
-      docs.push({
-        id: `DOC-OTH-${profile._id.toString().substring(18)}-${i}`,
-        docType: 'otherDocs',
-        name: `Additional Document ${i+1}`,
-        client: profile.fullName,
-        category: 'Other Documents',
-        file: url,
-        uploaded: profile.createdAt,
-        status: docStatus
-      });
-    });
-  }
-
+  // 1. Custom named documents (Keeps original user-given names like "Pan card", "Adhar Card")
   if (profile.customDocuments && profile.customDocuments.length > 0) {
     profile.customDocuments.forEach((doc) => {
       if (docs.some(d => d.file === doc.fileUrl)) return;
@@ -1227,6 +1217,23 @@ const extractDocuments = (profile) => {
         category: doc.category || 'General Document',
         file: doc.fileUrl,
         uploaded: doc.uploadedAt || profile.createdAt,
+        status: docStatus
+      });
+    });
+  }
+
+  // 2. Legacy other documents (Only if not already present in docs)
+  if (profile.otherDocs && profile.otherDocs.length > 0) {
+    profile.otherDocs.forEach((url, i) => {
+      if (docs.some(d => d.file === url)) return;
+      docs.push({
+        id: `DOC-OTH-${profile._id.toString().substring(18)}-${i}`,
+        docType: 'otherDocs',
+        name: `Additional Document ${i+1}`,
+        client: profile.fullName,
+        category: 'Other Documents',
+        file: url,
+        uploaded: profile.createdAt,
         status: docStatus
       });
     });
