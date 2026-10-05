@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const ClientProfile = require('../models/ClientProfile');
 
 // @desc    Create or update user's own client profile

@@ -25,11 +25,13 @@ app.use('/uploads', (req, res, next) => {
   }
   next();
 }, express.static(path.join(__dirname, 'uploads'), {
+  maxAge: '30d',
+  immutable: true,
   setHeaders: (res, filePath) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Content-Disposition', 'inline');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
   }
 }));
 
@@ -60,12 +62,16 @@ const eligibilityCheckRoutes = require('./routes/eligibilityCheckRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
+const repositoryRoutes = require('./routes/repositoryRoutes');
+const formRoutes = require('./routes/formRoutes');
 
 // Use Routes
 app.use('/api/cibil', cibilRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/repository', repositoryRoutes);
+app.use('/api/forms', formRoutes);
 app.use('/api/cibil-reports', cibilReportRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/enquiries', enquiryRoutes);
