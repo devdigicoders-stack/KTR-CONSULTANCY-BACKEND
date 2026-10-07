@@ -20,6 +20,7 @@ const {
   saveCreditInfo,
   addClientDocument,
   softDeleteDocument,
+  bulkDeleteDocuments,
   createCustomFolder,
   deleteCustomFolder,
   uploadFolderDocument,
@@ -133,6 +134,9 @@ const handleDocUpload = (req, res, next) => {
 router.route('/:id/documents')
   .post(protect, handleDocUpload, addClientDocument)
   .delete(protect, softDeleteDocument);
+
+router.route('/:id/documents/bulk-delete')
+  .post(protect, bulkDeleteDocuments);
 
 router.route('/:id/folders')
   .post(protect, createCustomFolder);

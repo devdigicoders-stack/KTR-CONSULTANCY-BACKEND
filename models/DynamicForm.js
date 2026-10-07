@@ -13,6 +13,10 @@ const dynamicFormSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  templateId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FormTemplate'
+  },
   title: {
     type: String,
     required: true,

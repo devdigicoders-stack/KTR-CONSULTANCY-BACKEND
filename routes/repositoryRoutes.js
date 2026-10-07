@@ -5,10 +5,14 @@ const path = require('path');
 const fs = require('fs');
 const {
   getFolders,
+  createFolder,
+  renameFolder,
+  deleteFolder,
   getItems,
   uploadItem,
   updateItem,
-  deleteItem
+  deleteItem,
+  bulkDeleteItems
 } = require('../controllers/repositoryController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -32,10 +36,17 @@ const upload = multer({
   limits: { fileSize: 500 * 1024 * 1024 } // 500MB
 });
 
+// Folders Management
 router.get('/folders', protect, getFolders);
+router.post('/folders', protect, createFolder);
+router.put('/folders/rename', protect, renameFolder);
+router.delete('/folders', protect, deleteFolder);
+
+// Items Management
 router.get('/items', protect, getItems);
-router.post('/upload', protect, upload.array('files', 50), uploadItem);
+router.post('/upload', protect, upload.array('files', 100), uploadItem);
 router.patch('/items/:id', protect, updateItem);
 router.delete('/items/:id', protect, deleteItem);
+router.post('/items/bulk-delete', protect, bulkDeleteItems);
 
 module.exports = router;

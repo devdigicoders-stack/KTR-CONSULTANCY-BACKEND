@@ -1,6 +1,17 @@
 const mongoose = require('mongoose');
 const ClientProfile = require('../models/ClientProfile');
 
+// Helper to calculate age from DOB (Formula: Current Year - Year of Birth)
+const calculateAge = (dob) => {
+  if (!dob) return null;
+  const d = new Date(dob);
+  if (isNaN(d.getTime())) return null;
+  const birthYear = d.getFullYear();
+  const currentYear = new Date().getFullYear();
+  const age = currentYear - birthYear;
+  return age >= 0 ? age : null;
+};
+
 // @desc    Create or update user's own client profile
 // @route   POST /api/clients/profile
 // @access  Private (User Only)
@@ -29,10 +40,49 @@ exports.submitProfile = async (req, res) => {
       docUpdates.addressLine1 = req.body.address;
     }
 
+    // Parse multiple applicants
+    let applicantsList = [];
+    if (req.body.applicants) {
+      try {
+        applicantsList = typeof req.body.applicants === 'string' ? JSON.parse(req.body.applicants) : req.body.applicants;
+      } catch (e) {
+        applicantsList = [];
+      }
+    }
+
+    if (Array.isArray(applicantsList) && applicantsList.length > 0) {
+      applicantsList = applicantsList.map((app, idx) => {
+        const appDob = app.dob ? new Date(app.dob) : undefined;
+        return {
+          fullName: (app.fullName || `Applicant ${idx + 1}`).trim(),
+          dob: appDob,
+          age: appDob ? calculateAge(appDob) : (app.age || null),
+          gender: app.gender || '',
+          mobile: app.mobile || '',
+          email: app.email || '',
+          motherName: app.motherName || '',
+          occupation: app.occupation || '',
+          panNumber: (app.panNumber || '').toUpperCase(),
+          aadhaarNumber: app.aadhaarNumber || '',
+          addressLine1: app.addressLine1 || app.address || '',
+          city: app.city || '',
+          state: app.state || '',
+          pincode: app.pincode || '',
+          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`)
+        };
+      });
+    }
+
+    const primaryDob = req.body.dob ? new Date(req.body.dob) : (applicantsList[0]?.dob || undefined);
+    const primaryAge = primaryDob ? calculateAge(primaryDob) : (req.body.age || applicantsList[0]?.age || null);
+
     let coApplicantObj = null;
     if (req.body.hasCoApplicant === 'true' || req.body.hasCoApplicant === true) {
+      const coDob = req.body.coApplicant_dob ? new Date(req.body.coApplicant_dob) : undefined;
       coApplicantObj = {
         fullName: req.body.coApplicant_fullName || '',
+        dob: coDob,
+        age: coDob ? calculateAge(coDob) : null,
         mobile: req.body.coApplicant_mobile || '',
         occupation: req.body.coApplicant_occupation || '',
         motherName: req.body.coApplicant_motherName || '',
@@ -49,6 +99,19 @@ exports.submitProfile = async (req, res) => {
     const profileData = {
       ...req.body,
       ...docUpdates,
+      dob: primaryDob,
+      age: primaryAge,
+      applicants: applicantsList.length > 0 ? applicantsList : [{
+        fullName: req.body.fullName,
+        dob: primaryDob,
+        age: primaryAge,
+        mobile: req.body.mobile,
+        occupation: req.body.occupation,
+        panNumber: req.body.panNumber,
+        aadhaarNumber: req.body.aadhaarNumber,
+        motherName: req.body.motherName,
+        relationship: 'Primary Applicant'
+      }],
       hasCoApplicant: req.body.hasCoApplicant === 'true' || req.body.hasCoApplicant === true,
       ...(coApplicantObj ? { coApplicant: coApplicantObj } : {}),
       user: userId,
@@ -285,6 +348,52 @@ exports.updateClient = async (req, res) => {
         details: changesList.join(' | '),
         timestamp: new Date()
       });
+    }
+
+    // Parse multiple applicants if provided
+    let applicantsList = null;
+    if (req.body.applicants) {
+      try {
+        applicantsList = typeof req.body.applicants === 'string' ? JSON.parse(req.body.applicants) : req.body.applicants;
+      } catch (e) {
+        applicantsList = null;
+      }
+    }
+
+    if (Array.isArray(applicantsList)) {
+      client.applicants = applicantsList.map((app, idx) => {
+        const appDob = app.dob ? new Date(app.dob) : undefined;
+        return {
+          fullName: (app.fullName || `Applicant ${idx + 1}`).trim(),
+          dob: appDob,
+          age: appDob ? calculateAge(appDob) : (app.age || null),
+          gender: app.gender || '',
+          mobile: app.mobile || '',
+          email: app.email || '',
+          motherName: app.motherName || '',
+          occupation: app.occupation || '',
+          panNumber: (app.panNumber || '').toUpperCase(),
+          aadhaarNumber: app.aadhaarNumber || '',
+          addressLine1: app.addressLine1 || app.address || '',
+          city: app.city || '',
+          state: app.state || '',
+          pincode: app.pincode || '',
+          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`)
+        };
+      });
+      if (client.applicants.length > 0) {
+        client.fullName = client.applicants[0].fullName || client.fullName;
+        if (client.applicants[0].dob) {
+          client.dob = client.applicants[0].dob;
+          client.age = client.applicants[0].age;
+        }
+      }
+    } else if (req.body.dob) {
+      const d = new Date(req.body.dob);
+      if (!isNaN(d.getTime())) {
+        client.dob = d;
+        client.age = calculateAge(d);
+      }
     }
 
     // Apply updates
@@ -532,6 +641,84 @@ exports.softDeleteDocument = async (req, res) => {
     });
   } catch (error) {
     console.error('Soft Delete Document Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Bulk delete documents for client profile
+// @route   POST /api/clients/:id/documents/bulk-delete
+// @access  Private (Admin/Staff)
+exports.bulkDeleteDocuments = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { docIds = [], fileUrls = [], reason } = req.body;
+    const uploaderName = req.user?.name || 'Staff/Admin';
+
+    if (!client.deletedDocuments) client.deletedDocuments = [];
+
+    // Filter out from customDocuments
+    if (client.customDocuments && client.customDocuments.length > 0) {
+      client.customDocuments = client.customDocuments.filter(cd => {
+        const isMatch = (docIds.length > 0 && cd._id && docIds.includes(cd._id.toString())) ||
+                        (fileUrls.length > 0 && fileUrls.includes(cd.fileUrl));
+        if (isMatch) {
+          client.deletedDocuments.push({
+            docType: cd.docType || 'customDocument',
+            docName: cd.name || 'Document',
+            fileUrl: cd.fileUrl,
+            deletedBy: req.user?._id || req.adminId,
+            deletedByName: uploaderName,
+            deletedAt: new Date(),
+            reason: reason || 'Bulk deleted by staff/admin'
+          });
+        }
+        return !isMatch;
+      });
+    }
+
+    // Filter out from otherDocs
+    if (client.otherDocs && client.otherDocs.length > 0 && fileUrls.length > 0) {
+      client.otherDocs = client.otherDocs.filter(url => !fileUrls.includes(url));
+    }
+
+    // Clear standard fields matching deleted fileUrls
+    const standardFields = ['photoUrl', 'panCardUrl', 'idProofUrl', 'addressProofUrl', 'aadhaarUrl', 'salarySlipUrl', 'itrUrl', 'form16Url', 'bankStatementUrl', 'propertyDocUrl', 'otherDocUrl'];
+    standardFields.forEach(field => {
+      if (fileUrls.includes(client[field])) {
+        client[field] = null;
+        const remaining = (client.customDocuments || []).filter(d => (d.docType === field || d.category === field) && !fileUrls.includes(d.fileUrl));
+        if (remaining.length > 0) {
+          client[field] = remaining[0].fileUrl;
+        }
+      }
+    });
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: uploaderName,
+      editorRole: req.user?.role || 'staff',
+      action: 'Documents Bulk Deleted',
+      details: `Deleted ${docIds.length + fileUrls.length} file(s) / document(s)`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Selected documents deleted successfully',
+      data: {
+        client,
+        documentsList: extractDocuments(client),
+        deletedDocuments: client.deletedDocuments
+      }
+    });
+  } catch (error) {
+    console.error('Bulk Delete Document Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
@@ -1501,14 +1688,49 @@ exports.getPublicSharedClientDocs = async (req, res) => {
       }))
     }));
 
+    const sanitizedApplicants = (client.applicants || []).map((app, idx) => ({
+      _id: app._id,
+      fullName: app.fullName,
+      dob: app.dob,
+      age: app.dob ? calculateAge(app.dob) : (app.age || null),
+      mobile: app.mobile,
+      occupation: app.occupation,
+      panNumber: app.panNumber,
+      aadhaarNumber: app.aadhaarNumber,
+      motherName: app.motherName,
+      relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`),
+      addressLine1: app.addressLine1,
+      city: app.city,
+      state: app.state,
+      pincode: app.pincode
+    }));
+
+    const clientAge = client.dob ? calculateAge(client.dob) : (client.age || null);
+
     res.json({
       success: true,
       data: {
         _id: client._id,
         fullName: client.fullName,
+        dob: client.dob,
+        age: clientAge,
+        mobile: client.mobile,
+        occupation: client.occupation,
+        motherName: client.motherName,
+        panNumber: client.panNumber,
+        aadhaarNumber: client.aadhaarNumber,
+        addressLine1: client.addressLine1,
+        city: client.city,
+        state: client.state,
+        pincode: client.pincode,
+        applicants: sanitizedApplicants,
+        coApplicant: client.coApplicant,
         applicationId: client.applicationId || client.refId || `KTR-${client._id.toString().substring(18).toUpperCase()}`,
         caseType: client.caseType || client.loanType || 'Financial / Legal Documentation',
+        loanType: client.loanType || client.caseType || 'Loan',
         loanAmount: client.loanAmount || 0,
+        caseNotes: client.caseNotes || client.notes || '',
+        notes: client.notes || client.caseNotes || '',
         createdAt: client.createdAt,
         updatedAt: client.updatedAt,
         documentsList,

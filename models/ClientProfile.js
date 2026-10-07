@@ -40,10 +40,31 @@ const clientProfileSchema = new mongoose.Schema({
   loanType: { type: String },
   caseType: { type: String },
 
-  // Co-Applicant (Optional)
+  // Multiple Applicants (Applicant 1, Applicant 2, Applicant 3, etc.)
+  applicants: [{
+    fullName: { type: String, required: true },
+    dob: { type: Date },
+    age: { type: Number },
+    gender: { type: String },
+    mobile: { type: String },
+    email: { type: String },
+    motherName: { type: String },
+    occupation: { type: String },
+    panNumber: { type: String },
+    aadhaarNumber: { type: String },
+    addressLine1: { type: String },
+    city: { type: String },
+    state: { type: String },
+    pincode: { type: String },
+    relationship: { type: String, default: 'Applicant' }
+  }],
+
+  // Co-Applicant (Legacy fallback)
   hasCoApplicant: { type: Boolean, default: false },
   coApplicant: {
     fullName: { type: String },
+    dob: { type: Date },
+    age: { type: Number },
     mobile: { type: String },
     occupation: { type: String },
     motherName: { type: String },
