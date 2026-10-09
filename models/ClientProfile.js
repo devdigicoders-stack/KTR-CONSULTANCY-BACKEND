@@ -170,6 +170,40 @@ const clientProfileSchema = new mongoose.Schema({
   // Custom document serial order chosen by user
   documentOrder: [{ type: String }],
 
+  // Banker Queries (Raised from Banker Portal)
+  bankerQueries: [{
+    queryText: { type: String, required: true },
+    documentTitle: { type: String, default: 'General Case' },
+    bankerName: { type: String },
+    bankerDesignation: { type: String },
+    bankName: { type: String },
+    bankerMobile: { type: String },
+    bankerEmail: { type: String },
+    priority: {
+      type: String,
+      enum: ['Normal', 'High', 'Urgent'],
+      default: 'Normal'
+    },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Resolved'],
+      default: 'Pending'
+    },
+    staffResponse: { type: String, default: '' },
+    respondedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    respondedByName: { type: String },
+    respondedAt: { type: Date },
+    // WhatsApp Automation Integration Readiness
+    whatsappLogs: [{
+      recipientType: { type: String, enum: ['Staff', 'Client', 'Banker'] },
+      recipientMobile: { type: String },
+      messageType: { type: String },
+      status: { type: String, default: 'Logged' },
+      sentAt: { type: Date, default: Date.now }
+    }],
+    createdAt: { type: Date, default: Date.now }
+  }],
+
   // Audit Log / Edit History
   editHistory: [{
     editedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },

@@ -30,7 +30,10 @@ const {
   deletePendency,
   getPublicSharedClientDocs,
   updateDocumentOrder,
-  updateDocumentNotes
+  updateDocumentNotes,
+  addBankerQuery,
+  respondBankerQuery,
+  deleteBankerQuery
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -102,10 +105,21 @@ router.route('/')
 router.route('/shared/:id')
   .get(getPublicSharedClientDocs);
 
+// Public Banker Query submission (No login required)
+router.route('/shared/:id/query')
+  .post(addBankerQuery);
+
 router.route('/:id')
   .get(protect, getClientById)
   .put(protect, uploadFields, updateClient)
   .delete(protect, deleteClient);
+
+// Staff / Admin Banker Query resolution & response
+router.route('/:id/banker-queries/:queryId/respond')
+  .post(protect, respondBankerQuery);
+
+router.route('/:id/banker-queries/:queryId')
+  .delete(protect, deleteBankerQuery);
 
 router.route('/:id/document-order')
   .put(protect, updateDocumentOrder);

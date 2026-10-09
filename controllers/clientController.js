@@ -1749,7 +1749,20 @@ exports.getPublicSharedClientDocs = async (req, res) => {
         addressProofUrl: cleanDocUrl(client.addressProofUrl),
         otherDocs: (client.otherDocs || []).map(cleanDocUrl),
         documentOrder: client.documentOrder || [],
-        documentNotes: client.documentNotes ? Object.fromEntries(client.documentNotes) : {}
+        documentNotes: client.documentNotes ? Object.fromEntries(client.documentNotes) : {},
+        bankerQueries: (client.bankerQueries || []).map(bq => ({
+          _id: bq._id,
+          queryText: bq.queryText,
+          documentTitle: bq.documentTitle,
+          bankerName: bq.bankerName,
+          bankName: bq.bankName,
+          priority: bq.priority,
+          status: bq.status,
+          staffResponse: bq.staffResponse,
+          respondedByName: bq.respondedByName,
+          respondedAt: bq.respondedAt,
+          createdAt: bq.createdAt
+        }))
       }
     });
   } catch (error) {
@@ -1851,6 +1864,171 @@ exports.updateDocumentNotes = async (req, res) => {
     });
   } catch (error) {
     console.error('Update Document Notes Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Raise a Query from Banker Document Portal (Public)
+// @route   POST /api/clients/shared/:id/query
+// @access  Public
+exports.addBankerQuery = async (req, res) => {
+  try {
+    const rawId = req.params.id;
+    const { queryText, documentTitle, bankerName, bankerDesignation, bankName, bankerMobile, bankerEmail, priority } = req.body;
+
+    if (!queryText || !queryText.trim()) {
+      return res.status(400).json({ success: false, message: 'Query message is required.' });
+    }
+
+    let client = null;
+    if (mongoose.Types.ObjectId.isValid(rawId)) {
+      client = await ClientProfile.findById(rawId);
+    }
+    if (!client) {
+      client = await ClientProfile.findOne({
+        $or: [
+          { applicationId: rawId },
+          { refId: rawId },
+          { _id: rawId.length === 24 ? rawId : null }
+        ].filter(Boolean)
+      });
+    }
+
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Case not found or link has expired.' });
+    }
+
+    const newQuery = {
+      queryText: queryText.trim(),
+      documentTitle: (documentTitle || 'General Case Query').trim(),
+      bankerName: (bankerName || 'Bank Official').trim(),
+      bankerDesignation: (bankerDesignation || '').trim(),
+      bankName: (bankName || '').trim(),
+      bankerMobile: (bankerMobile || '').trim(),
+      bankerEmail: (bankerEmail || '').trim(),
+      priority: ['Normal', 'High', 'Urgent'].includes(priority) ? priority : 'Normal',
+      status: 'Pending',
+      whatsappLogs: [
+        {
+          recipientType: 'Staff',
+          messageType: 'Banker Query Notification',
+          status: 'Logged',
+          sentAt: new Date()
+        }
+      ],
+      createdAt: new Date()
+    };
+
+    if (!client.bankerQueries) {
+      client.bankerQueries = [];
+    }
+
+    client.bankerQueries.unshift(newQuery);
+
+    // Record audit trail
+    if (!client.editHistory) client.editHistory = [];
+    client.editHistory.push({
+      editorName: bankerName || 'Banker',
+      editorRole: 'banker',
+      action: 'Banker Query Raised',
+      details: `Query on "${newQuery.documentTitle}": ${newQuery.queryText}`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Your query has been submitted successfully to the case handling team.',
+      data: newQuery
+    });
+  } catch (error) {
+    console.error('Add Banker Query Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Staff / Admin respond to Banker Query
+// @route   POST /api/clients/:id/banker-queries/:queryId/respond
+// @access  Private (Staff/Admin)
+exports.respondBankerQuery = async (req, res) => {
+  try {
+    const { id, queryId } = req.params;
+    const { staffResponse, status } = req.body;
+
+    const client = await ClientProfile.findById(id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found.' });
+    }
+
+    const query = (client.bankerQueries || []).id(queryId);
+    if (!query) {
+      return res.status(404).json({ success: false, message: 'Query not found.' });
+    }
+
+    if (staffResponse !== undefined) {
+      query.staffResponse = staffResponse.trim();
+    }
+    if (status) {
+      query.status = status;
+    }
+    query.respondedBy = req.adminId || null;
+    query.respondedByName = req.user?.name || 'Staff';
+    query.respondedAt = new Date();
+
+    // Prepare WhatsApp automated log entry for client/banker communication
+    query.whatsappLogs.push({
+      recipientType: 'Banker',
+      recipientMobile: query.bankerMobile || '',
+      messageType: 'Staff Query Resolution',
+      status: 'Logged',
+      sentAt: new Date()
+    });
+
+    if (!client.editHistory) client.editHistory = [];
+    client.editHistory.push({
+      editedBy: req.adminId,
+      editorName: req.user?.name || 'Staff',
+      editorRole: req.user?.role || 'staff',
+      action: 'Banker Query Responded',
+      details: `Status: ${query.status} | Response: ${query.staffResponse || 'Updated'}`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Query response saved successfully.',
+      data: client.bankerQueries
+    });
+  } catch (error) {
+    console.error('Respond Banker Query Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Delete / Dismiss Banker Query
+// @route   DELETE /api/clients/:id/banker-queries/:queryId
+// @access  Private (Staff/Admin)
+exports.deleteBankerQuery = async (req, res) => {
+  try {
+    const { id, queryId } = req.params;
+    const client = await ClientProfile.findById(id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found.' });
+    }
+
+    client.bankerQueries = (client.bankerQueries || []).filter(q => q._id.toString() !== queryId.toString());
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Banker query removed successfully.',
+      data: client.bankerQueries
+    });
+  } catch (error) {
+    console.error('Delete Banker Query Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
