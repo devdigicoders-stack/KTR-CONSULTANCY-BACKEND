@@ -41,6 +41,7 @@ router.get('/folders', protect, getFolders);
 router.post('/folders', protect, createFolder);
 router.put('/folders/rename', protect, renameFolder);
 router.delete('/folders', protect, deleteFolder);
+router.delete('/folders/:folderName', protect, deleteFolder);
 
 // Items Management
 router.get('/items', protect, getItems);

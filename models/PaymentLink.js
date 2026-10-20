@@ -30,6 +30,10 @@ const paymentLinkSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
+  taxableAmount: {
+    type: Number,
+    default: 0,
+  },
   taxRate: {
     type: Number,
     default: 0,
@@ -66,6 +70,43 @@ const paymentLinkSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Admin',
+  },
+  paymentType: {
+    type: String,
+    enum: ['online_link', 'manual_invoice'],
+    default: 'online_link',
+  },
+  paymentMode: {
+    type: String,
+    default: 'Online',
+  },
+  isManual: {
+    type: Boolean,
+    default: false,
+  },
+  referenceNumber: {
+    type: String,
+    default: '',
+  },
+  clientRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientProfile',
+  },
+  clientEmail: {
+    type: String,
+    default: '',
+  },
+  clientPan: {
+    type: String,
+    default: '',
+  },
+  clientAddress: {
+    type: String,
+    default: '',
+  },
+  notes: {
+    type: String,
+    default: '',
   },
 }, { timestamps: true });
 

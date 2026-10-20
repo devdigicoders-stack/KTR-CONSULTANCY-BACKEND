@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   createPaymentLink,
+  createManualInvoice,
+  updatePaymentStatus,
   getPaymentLinkById,
   verifyLinkPayment,
   getAllInvoices,
@@ -15,8 +17,10 @@ router.get('/link/:linkId', getPaymentLinkById);
 router.post('/verify-link', verifyLinkPayment);
 router.get('/invoice-pdf/:id', downloadPaymentLinkInvoicePdf);
 
-// Protected Admin Routes
+// Protected Staff & Admin Routes
 router.post('/create-link', protect, createPaymentLink);
+router.post('/create-manual-invoice', protect, createManualInvoice);
+router.patch('/:id/status', protect, updatePaymentStatus);
 router.get('/invoices', protect, getAllInvoices);
 router.delete('/:id', protect, deletePaymentLink);
 

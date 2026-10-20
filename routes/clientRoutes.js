@@ -31,9 +31,16 @@ const {
   getPublicSharedClientDocs,
   updateDocumentOrder,
   updateDocumentNotes,
+  updateDocumentTitle,
   addBankerQuery,
   respondBankerQuery,
-  deleteBankerQuery
+  deleteBankerQuery,
+  createShareLink,
+  toggleHideClient,
+  reorderClients,
+  getDeletedClientBackups,
+  getDeletedClientBackupById,
+  restoreDeletedClient
 } = require('../controllers/clientController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -101,13 +108,34 @@ router.route('/pending/count')
 router.route('/')
   .get(protect, getAllClients);
 
+// Reorder clients (drag-and-drop order persistence)
+router.route('/reorder')
+  .post(protect, reorderClients);
+
 // Public Shared Documents Route (No login required)
 router.route('/shared/:id')
   .get(getPublicSharedClientDocs);
 
+// Short branded share link generator (Public & Private)
+router.route('/shared/:id/share-link')
+  .post(createShareLink);
+
+router.route('/:id/share-link')
+  .post(createShareLink);
+
 // Public Banker Query submission (No login required)
 router.route('/shared/:id/query')
   .post(addBankerQuery);
+
+// Super Admin Recoverable Backup Routes (Super Admin Only)
+router.route('/super-admin/deleted-backups')
+  .get(protect, getDeletedClientBackups);
+
+router.route('/super-admin/deleted-backups/:id')
+  .get(protect, getDeletedClientBackupById);
+
+router.route('/super-admin/restore/:id')
+  .post(protect, restoreDeletedClient);
 
 router.route('/:id')
   .get(protect, getClientById)
@@ -126,6 +154,9 @@ router.route('/:id/document-order')
 
 router.route('/:id/document-notes')
   .put(protect, updateDocumentNotes);
+
+router.route('/:id/document-title')
+  .put(protect, updateDocumentTitle);
 
 // Setup Multer multi/single document upload handler (up to 200 documents per batch)
 const docUploadMiddleware = upload.fields([
@@ -174,6 +205,9 @@ router.route('/:id/pendencies/:pendencyId')
 
 router.route('/:id/status')
   .patch(protect, updateClientStatus);
+
+router.route('/:id/toggle-hide')
+  .patch(protect, toggleHideClient);
 
 router.route('/:id/credit-info')
   .post(protect, saveCreditInfo);

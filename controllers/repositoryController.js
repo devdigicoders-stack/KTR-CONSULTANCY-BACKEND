@@ -3,6 +3,9 @@ const RepositoryFolder = require('../models/RepositoryFolder');
 const fs = require('fs');
 const path = require('path');
 
+const DEFAULT_COMMON_FOLDERS = ['Loan Application Forms', 'Bank Verification Kits', 'Income & Legal Formats', 'General'];
+const DEFAULT_PRIVATE_FOLDERS = ['General Forms', 'My Drafts', 'Client Dossiers'];
+
 // @desc    Get repository folders (common or private)
 // @route   GET /api/repository/folders
 // @access  Private (Staff/Admin)
@@ -12,10 +15,25 @@ exports.getFolders = async (req, res) => {
     const query = { scope };
 
     if (scope === 'private') {
-      if (req.user?.role !== 'admin') {
-        query.createdBy = req.adminId;
-      } else if (req.query.staffId) {
-        query.createdBy = req.query.staffId;
+      query.createdBy = (req.user?.role === 'admin' && req.query.staffId) ? req.query.staffId : req.adminId;
+    }
+
+    // Seed initial default folders if this scope/user has no folders and no items yet
+    const folderCount = await RepositoryFolder.countDocuments(query);
+    const itemCount = await RepositoryItem.countDocuments(query);
+
+    if (folderCount === 0 && itemCount === 0) {
+      const defaults = scope === 'common' ? DEFAULT_COMMON_FOLDERS : DEFAULT_PRIVATE_FOLDERS;
+      const seedDocs = defaults.map(name => ({
+        folderName: name,
+        scope,
+        createdBy: req.adminId,
+        createdByName: req.user?.name || 'Staff'
+      }));
+      try {
+        await RepositoryFolder.insertMany(seedDocs, { ordered: false });
+      } catch (seedErr) {
+        // Ignore duplicate key errors if concurrent
       }
     }
 
@@ -23,14 +41,15 @@ exports.getFolders = async (req, res) => {
     const itemFolders = await RepositoryItem.distinct('folderName', query);
     
     // 2. Get explicitly created folders from RepositoryFolder collection
-    const createdFolders = await RepositoryFolder.find(query).distinct('folderName');
+    const createdFolders = await RepositoryFolder.distinct('folderName', query);
 
-    // 3. Default system folders if empty
-    const defaultCommonFolders = ['Loan Application Forms', 'Bank Verification Kits', 'Income & Legal Formats', 'General'];
-    const defaultPrivateFolders = ['General Forms', 'My Drafts', 'Client Dossiers'];
-    const baseDefaults = scope === 'common' ? defaultCommonFolders : defaultPrivateFolders;
+    const folderList = Array.from(new Set([...createdFolders, ...itemFolders])).filter(Boolean);
 
-    const folderList = Array.from(new Set([...baseDefaults, ...createdFolders, ...itemFolders]));
+    // Fallback to defaults or General if empty
+    if (folderList.length === 0) {
+      const fallback = scope === 'common' ? DEFAULT_COMMON_FOLDERS : DEFAULT_PRIVATE_FOLDERS;
+      folderList.push(...fallback);
+    }
 
     res.json({ success: true, folders: folderList });
   } catch (error) {
@@ -44,7 +63,10 @@ exports.getFolders = async (req, res) => {
 // @access  Private (Staff/Admin)
 exports.createFolder = async (req, res) => {
   try {
-    const { folderName, scope = 'common', description = '' } = req.body;
+    const folderName = req.body.folderName || req.body.name;
+    const scope = req.body.scope || 'common';
+    const description = req.body.description || '';
+
     if (!folderName || !folderName.trim()) {
       return res.status(400).json({ success: false, message: 'Folder name is required.' });
     }
@@ -59,19 +81,28 @@ exports.createFolder = async (req, res) => {
 
     let folder = await RepositoryFolder.findOne(query);
     if (!folder) {
-      folder = await RepositoryFolder.create({
-        folderName: cleanName,
-        scope,
-        createdBy: req.adminId,
-        createdByName: req.user?.name || 'Staff',
-        description: description.trim()
-      });
+      try {
+        folder = await RepositoryFolder.create({
+          folderName: cleanName,
+          scope,
+          createdBy: req.adminId,
+          createdByName: req.user?.name || 'Staff',
+          description: description.trim()
+        });
+      } catch (dbErr) {
+        if (dbErr.code === 11000) {
+          folder = await RepositoryFolder.findOne(query);
+        } else {
+          throw dbErr;
+        }
+      }
     }
 
     res.status(201).json({
       success: true,
       message: `Folder "${cleanName}" created successfully`,
-      data: folder
+      data: folder,
+      folderName: cleanName
     });
   } catch (error) {
     console.error('Create Folder Error:', error);
@@ -93,7 +124,7 @@ exports.renameFolder = async (req, res) => {
     const cleanNew = newName.trim();
 
     const query = { folderName: cleanOld, scope };
-    if (scope === 'private' && req.user?.role !== 'admin') {
+    if (scope === 'private') {
       query.createdBy = req.adminId;
     }
 
@@ -103,9 +134,23 @@ exports.renameFolder = async (req, res) => {
     // Update all items belonging to old folder
     await RepositoryItem.updateMany(query, { $set: { folderName: cleanNew } });
 
+    // Also ensure the new folder exists in RepositoryFolder
+    const newFolderQuery = { folderName: cleanNew, scope };
+    if (scope === 'private') newFolderQuery.createdBy = req.adminId;
+    const existing = await RepositoryFolder.findOne(newFolderQuery);
+    if (!existing) {
+      await RepositoryFolder.create({
+        folderName: cleanNew,
+        scope,
+        createdBy: req.adminId,
+        createdByName: req.user?.name || 'Staff'
+      });
+    }
+
     res.json({
       success: true,
-      message: `Folder renamed to "${cleanNew}" successfully`
+      message: `Folder renamed to "${cleanNew}" successfully`,
+      folderName: cleanNew
     });
   } catch (error) {
     console.error('Rename Folder Error:', error);
@@ -118,20 +163,34 @@ exports.renameFolder = async (req, res) => {
 // @access  Private (Staff/Admin)
 exports.deleteFolder = async (req, res) => {
   try {
-    const { folderName, scope = 'common' } = req.body;
-    if (!folderName) {
+    const folderName = req.params.folderName || req.body.folderName || req.query.folderName || req.body.name;
+    const scope = req.query.scope || req.body.scope || 'common';
+
+    if (!folderName || !folderName.trim()) {
       return res.status(400).json({ success: false, message: 'Folder name is required.' });
     }
 
-    const query = { folderName: folderName.trim(), scope };
-    if (scope === 'private' && req.user?.role !== 'admin') {
+    const cleanName = folderName.trim();
+    const query = { folderName: cleanName, scope };
+    if (scope === 'private') {
       query.createdBy = req.adminId;
+    }
+
+    // Clean up files from disk
+    const itemsToDelete = await RepositoryItem.find(query);
+    for (const item of itemsToDelete) {
+      if (item.fileUrl && item.fileUrl.startsWith('/uploads/')) {
+        const filePath = path.join(__dirname, '..', item.fileUrl);
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+      }
     }
 
     await RepositoryFolder.deleteMany(query);
     await RepositoryItem.deleteMany(query);
 
-    res.json({ success: true, message: `Folder "${folderName}" and its items deleted successfully` });
+    res.json({ success: true, message: `Folder "${cleanName}" and its items deleted successfully` });
   } catch (error) {
     console.error('Delete Folder Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
@@ -151,11 +210,7 @@ exports.getItems = async (req, res) => {
     }
 
     if (scope === 'private') {
-      if (req.user?.role !== 'admin') {
-        query.createdBy = req.adminId;
-      } else if (req.query.staffId) {
-        query.createdBy = req.query.staffId;
-      }
+      query.createdBy = (req.user?.role === 'admin' && req.query.staffId) ? req.query.staffId : req.adminId;
     }
 
     const items = await RepositoryItem.find(query)
@@ -176,7 +231,7 @@ exports.uploadItem = async (req, res) => {
   try {
     const { scope = 'common', folderName = 'General', name, notes } = req.body;
 
-    if (!req.file && !req.files) {
+    if (!req.file && (!req.files || req.files.length === 0)) {
       return res.status(400).json({ success: false, message: 'No file uploaded.' });
     }
 
@@ -200,7 +255,8 @@ exports.uploadItem = async (req, res) => {
       }
     } catch (e) {}
 
-    for (const f of files) {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
       if (!f) continue;
       const fileUrl = `/uploads/${f.filename}`;
       const ext = path.extname(f.originalname).toLowerCase().replace('.', '');
@@ -209,10 +265,13 @@ exports.uploadItem = async (req, res) => {
       else if (['pdf'].includes(ext)) fileType = 'pdf';
       else if (['xls', 'xlsx', 'csv'].includes(ext)) fileType = 'spreadsheet';
 
+      const baseName = name ? name.trim() : f.originalname.replace(/\.[^/.]+$/, '');
+      const finalName = files.length > 1 && name ? `${baseName} (${i + 1})` : baseName;
+
       const item = await RepositoryItem.create({
         scope,
         folderName: targetFolderName,
-        name: name ? name.trim() : f.originalname.replace(/\.[^/.]+$/, ''),
+        name: finalName,
         fileUrl,
         fileType,
         fileSize: f.size || 0,

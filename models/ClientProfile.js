@@ -56,7 +56,11 @@ const clientProfileSchema = new mongoose.Schema({
     city: { type: String },
     state: { type: String },
     pincode: { type: String },
-    relationship: { type: String, default: 'Applicant' }
+    relationship: { type: String, default: 'Applicant' },
+    customFields: [{
+      fieldName: { type: String },
+      fieldValue: { type: String }
+    }]
   }],
 
   // Co-Applicant (Legacy fallback)
@@ -82,6 +86,11 @@ const clientProfileSchema = new mongoose.Schema({
   relationship: { type: String },
   notes: { type: String },
   caseNotes: { type: String },
+  internalNotes: { type: String, default: '' },
+  customFields: [{
+    fieldName: { type: String, required: true },
+    fieldValue: { type: String, default: '' }
+  }],
 
   // Documents (URLs / File Paths)
   photoUrl: { type: String },
@@ -100,8 +109,47 @@ const clientProfileSchema = new mongoose.Schema({
   // Application Status
   status: {
     type: String,
-    enum: ['Pending', 'Approved', 'Rejected'],
-    default: 'Pending',
+    enum: [
+      'Documents Pending',
+      'Bank Side Pending',
+      'Client Side Pending',
+      'Case Sanctioned',
+      'Disbursement Pendency',
+      'Case Disbursed',
+      'Pending',
+      'Approved',
+      'Rejected'
+    ],
+    default: 'Documents Pending',
+  },
+
+  // Visibility (Hidden from active list without deleting any data)
+  isHidden: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+
+  // Soft-Delete & Super Admin Recovery Tracking (Zero data loss)
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  deletedAt: { type: Date },
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  deletedByName: { type: String },
+  deletedByRole: { type: String },
+  deletionReason: { type: String },
+  restoredAt: { type: Date },
+  restoredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  restoredByName: { type: String },
+
+  // Custom Drag-and-Drop Display Ordering
+  displayOrder: {
+    type: Number,
+    default: 0,
+    index: true
   },
 
   // Continuous Pendency Tracking (Complete History)
@@ -125,10 +173,12 @@ const clientProfileSchema = new mongoose.Schema({
   // Standalone Named Custom Documents
   customDocuments: [{
     name: { type: String, required: true },
+    fileTitle: { type: String },
     fileUrl: { type: String, required: true },
     docType: { type: String },
     category: { type: String, default: 'Document' },
     notes: { type: String, default: '' },
+    password: { type: String, default: '' },
     uploadedAt: { type: Date, default: Date.now },
     uploadedByName: { type: String }
   }],
@@ -141,9 +191,11 @@ const clientProfileSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     documents: [{
       name: { type: String, required: true },
+      fileTitle: { type: String },
       fileUrl: { type: String, required: true },
       category: { type: String, default: 'Custom File' },
       notes: { type: String, default: '' },
+      password: { type: String, default: '' },
       uploadedAt: { type: Date, default: Date.now },
       uploadedByName: { type: String }
     }]
@@ -162,6 +214,20 @@ const clientProfileSchema = new mongoose.Schema({
 
   // Custom document notes per document title / key
   documentNotes: {
+    type: Map,
+    of: String,
+    default: () => new Map()
+  },
+
+  // Custom document passwords per document title / key
+  documentPasswords: {
+    type: Map,
+    of: String,
+    default: () => new Map()
+  },
+
+  // Custom document titles per fileUrl / docId / standard document key
+  documentCustomTitles: {
     type: Map,
     of: String,
     default: () => new Map()
@@ -202,6 +268,28 @@ const clientProfileSchema = new mongoose.Schema({
       sentAt: { type: Date, default: Date.now }
     }],
     createdAt: { type: Date, default: Date.now }
+  }],
+
+  // Link Form Submissions History (Internal staff visibility only)
+  formSubmissions: [{
+    formId: { type: mongoose.Schema.Types.ObjectId, ref: 'DynamicForm' },
+    formTitle: { type: String, default: 'Client Data Collection Form' },
+    formType: { type: String, default: 'data_form' },
+    submittedAt: { type: Date, default: Date.now },
+    submittedData: { type: mongoose.Schema.Types.Mixed },
+    submittedFields: [{
+      key: { type: String },
+      label: { type: String },
+      value: { type: mongoose.Schema.Types.Mixed }
+    }],
+    uploadedFiles: [{
+      name: { type: String },
+      fileUrl: { type: String },
+      docType: { type: String },
+      notes: { type: String, default: 'Link Submission' }
+    }],
+    sourceLabel: { type: String, default: 'Link Submission' },
+    summaryText: { type: String, default: '' }
   }],
 
   // Audit Log / Edit History

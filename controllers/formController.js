@@ -589,7 +589,7 @@ exports.submitPublicForm = async (req, res) => {
           name: cleanDocTitle,
           fileUrl,
           docType: fieldName,
-          notes: `Submitted via link: ${form.title}`
+          notes: 'Link Submission'
         });
 
         if (standardMap[fieldName] && !docFieldUpdates[standardMap[fieldName]]) {
@@ -597,6 +597,81 @@ exports.submitPublicForm = async (req, res) => {
         }
       });
     }
+
+    // Build human-readable submittedFields & summaryText
+    const fieldMap = new Map();
+    if (form.fields && Array.isArray(form.fields)) {
+      form.fields.forEach(fld => {
+        if (fld.id) fieldMap.set(fld.id, fld.label || fld.id);
+        if (fld.mappedField) fieldMap.set(fld.mappedField, fld.label || fld.mappedField);
+      });
+    }
+
+    const standardLabels = {
+      fullName: 'Full Name',
+      mobile: 'Mobile Number',
+      email: 'Email Address',
+      dob: 'Date of Birth',
+      age: 'Age',
+      fatherName: "Father's Name",
+      motherName: "Mother's Name",
+      occupation: 'Occupation / Profession',
+      panNumber: 'PAN Number',
+      aadhaarNumber: 'Aadhaar Number',
+      loanAmount: 'Loan Amount',
+      caseType: 'Case Type',
+      loanType: 'Loan Type',
+      address: 'Address',
+      addressLine1: 'Address',
+      city: 'City',
+      state: 'State',
+      pincode: 'PIN Code',
+      notes: 'Remarks / Notes',
+    };
+
+    const submittedFields = [];
+    Object.entries(bodyData).forEach(([key, val]) => {
+      if (val === undefined || val === null || val === '') return;
+      if (key === 'applicants' || key === 'requestedDocs') return;
+
+      let label = fieldMap.get(key) || standardLabels[key];
+      if (!label) {
+        label = key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim();
+        label = label.charAt(0).toUpperCase() + label.slice(1);
+      }
+
+      submittedFields.push({
+        key,
+        label,
+        value: val
+      });
+    });
+
+    const summaryParts = [];
+    submittedFields.slice(0, 8).forEach(sf => {
+      const shortVal = typeof sf.value === 'string' ? sf.value.trim() : String(sf.value);
+      if (shortVal) {
+        summaryParts.push(`${sf.label}: ${shortVal}`);
+      }
+    });
+    const summaryText = summaryParts.join(' • ');
+
+    const submissionEntry = {
+      formId: form._id,
+      formTitle: form.title || 'Client Data Collection Form',
+      formType: form.type || 'data_form',
+      submittedAt: new Date(),
+      submittedData: bodyData,
+      submittedFields,
+      uploadedFiles: uploadedList.map(u => ({
+        name: u.name,
+        fileUrl: u.fileUrl,
+        docType: u.docType,
+        notes: 'Link Submission'
+      })),
+      sourceLabel: 'Link Submission',
+      summaryText
+    };
 
     let client = null;
 
@@ -686,6 +761,10 @@ exports.submitPublicForm = async (req, res) => {
         });
       }
 
+      // Save structured Link Submission entry into client profile
+      if (!client.formSubmissions) client.formSubmissions = [];
+      client.formSubmissions.unshift(submissionEntry);
+
       // Add audit edit entry
       if (!client.editHistory) client.editHistory = [];
       client.editHistory.push({
@@ -693,7 +772,7 @@ exports.submitPublicForm = async (req, res) => {
         editorName: 'Client (Public Submission)',
         editorRole: 'client',
         action: 'Form Data & Documents Submitted',
-        details: `Client submitted form data / documents via link: ${form.title}`,
+        details: `Client submitted form data / documents via Link Submission: ${form.title}`,
         timestamp: new Date()
       });
 
@@ -761,6 +840,7 @@ exports.submitPublicForm = async (req, res) => {
         loanType: bodyData.caseType || (form.type === 'doc_request' ? 'Document Verification' : 'Client Onboarding'),
         status: 'Pending',
         applicants: initialApplicants,
+        formSubmissions: [submissionEntry],
         ...docFieldUpdates,
         customDocuments: uploadedList.map(up => ({
           name: up.name,

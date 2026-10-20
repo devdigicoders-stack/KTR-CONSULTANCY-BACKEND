@@ -33,8 +33,15 @@ function generateInvoicePDFBuffer(invoiceData) {
         sgst = '45.00',
         totalAmount = 590,
         paymentId = 'N/A',
+        referenceNumber = '',
+        paymentMode = 'Online Gateway',
+        isManual = false,
+        status = 'Paid',
         date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
       } = invoiceData;
+
+      const isManualPayment = isManual || (paymentMode && !['Online', 'Online Gateway'].includes(paymentMode));
+      const isPaid = status === 'Paid';
 
       // Primary Colors
       const brandDark = '#081326';
@@ -72,7 +79,7 @@ function generateInvoicePDFBuffer(invoiceData) {
 
       // Box 1: Billed To
       doc.rect(40, boxY, boxWidth, boxHeight).fillAndStroke('#f9fafb', borderGray);
-      doc.fillColor(brandGold).fontSize(8).font('Helvetica-Bold').text('BILLED TO (APPLICANT DETAILS)', 52, boxY + 10);
+      doc.fillColor(brandGold).fontSize(8).font('Helvetica-Bold').text('BILLED TO (CLIENT DETAILS)', 52, boxY + 10);
       doc.fillColor(brandDark).fontSize(11).font('Helvetica-Bold').text(clientName, 52, boxY + 24);
       if (pan && pan !== 'N/A') {
         doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text(`PAN Number: `, 52, boxY + 40);
@@ -81,15 +88,30 @@ function generateInvoicePDFBuffer(invoiceData) {
       doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text(`Mobile Number: `, 52, boxY + 54);
       doc.fillColor(brandDark).font('Helvetica-Bold').text(clientMobile.startsWith('+91') ? clientMobile : `+91 ${clientMobile}`, 115, boxY + 54);
 
-      // Box 2: Payment Meta
+      // Box 2: Payment Meta (Carefully distinguished for Manual vs Gateway)
       doc.rect(307, boxY, boxWidth, boxHeight).fillAndStroke('#f9fafb', borderGray);
       doc.fillColor(brandGold).fontSize(8).font('Helvetica-Bold').text('PAYMENT & TRANSACTION META', 319, boxY + 10);
-      doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Gateway:', 319, boxY + 24);
-      doc.fillColor(brandDark).font('Helvetica-Bold').text('Online (Razorpay Gateway)', 410, boxY + 24);
-      doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Transaction ID:', 319, boxY + 40);
-      doc.fillColor('#16a34a').font('Helvetica-Bold').text(paymentId, 410, boxY + 40);
-      doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Status:', 319, boxY + 54);
-      doc.fillColor('#16a34a').font('Helvetica-Bold').text('Captured & Verified', 410, boxY + 54);
+
+      if (isManualPayment) {
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Mode:', 319, boxY + 24);
+        doc.fillColor(brandDark).font('Helvetica-Bold').text(paymentMode || 'Manual Receipt', 410, boxY + 24);
+
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Reference / UTR:', 319, boxY + 40);
+        const refDisplay = referenceNumber || paymentId || (isPaid ? 'Direct Payment' : '—');
+        doc.fillColor(isPaid ? '#16a34a' : '#d97706').font('Helvetica-Bold').text(refDisplay, 410, boxY + 40);
+
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Status:', 319, boxY + 54);
+        doc.fillColor(isPaid ? '#16a34a' : '#d97706').font('Helvetica-Bold').text(isPaid ? 'Paid (Manual Receipt)' : 'Payment Pending', 410, boxY + 54);
+      } else {
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Gateway:', 319, boxY + 24);
+        doc.fillColor(brandDark).font('Helvetica-Bold').text('Online (Razorpay Gateway)', 410, boxY + 24);
+
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Transaction ID:', 319, boxY + 40);
+        doc.fillColor(isPaid ? '#16a34a' : '#d97706').font('Helvetica-Bold').text(paymentId || '—', 410, boxY + 40);
+
+        doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('Payment Status:', 319, boxY + 54);
+        doc.fillColor(isPaid ? '#16a34a' : '#d97706').font('Helvetica-Bold').text(isPaid ? 'Captured & Verified' : 'Payment Pending', 410, boxY + 54);
+      }
 
       // Itemized Services Table
       const tableY = 225;
@@ -105,7 +127,7 @@ function generateInvoicePDFBuffer(invoiceData) {
       const row1Y = tableY + 30;
       doc.rect(40, tableY + 24, 515, 45).fillAndStroke('#ffffff', borderGray);
       doc.fillColor(brandDark).fontSize(9.5).font('Helvetica-Bold').text(serviceName, 52, row1Y);
-      doc.fillColor(textGray).fontSize(8).font('Helvetica').text(serviceDetails || `Official Credit Bureau PDF Report (${bureau}) with account history`, 52, row1Y + 14);
+      doc.fillColor(textGray).fontSize(8).font('Helvetica').text(serviceDetails || `Consulting & Advisory Services (${serviceName})`, 52, row1Y + 14);
 
       doc.fillColor(textGray).fontSize(8.5).font('Helvetica').text('998311', 290, row1Y + 4);
       doc.text('1', 350, row1Y + 4);
@@ -117,7 +139,7 @@ function generateInvoicePDFBuffer(invoiceData) {
       // Discount Row if applied
       if (discountAmount > 0) {
         doc.rect(40, currentY, 515, 22).fillAndStroke('#f0fdf4', borderGray);
-        doc.fillColor('#16a34a').fontSize(8.5).font('Helvetica-Bold').text(`Promo Discount Applied (${couponCode || 'FLAT25'})`, 52, currentY + 6);
+        doc.fillColor('#16a34a').fontSize(8.5).font('Helvetica-Bold').text(`Discount Applied (${couponCode || 'PROMO'})`, 52, currentY + 6);
         doc.text(`-${Number(discountAmount).toFixed(2)}`, 465, currentY + 6, { width: 75, align: 'right' });
         currentY += 25;
       }
@@ -133,30 +155,36 @@ function generateInvoicePDFBuffer(invoiceData) {
       };
 
       addCalcLine('Taxable Value:', `Rs. ${Number(taxableValue).toFixed(2)}`, calcY + 12);
-      addCalcLine('CGST (9%):', `Rs. ${Number(cgst).toFixed(2)}`, calcY + 28);
-      addCalcLine('SGST (9%):', `Rs. ${Number(sgst).toFixed(2)}`, calcY + 44);
+      addCalcLine('CGST:', `Rs. ${Number(cgst).toFixed(2)}`, calcY + 28);
+      addCalcLine('SGST:', `Rs. ${Number(sgst).toFixed(2)}`, calcY + 44);
 
       doc.strokeColor(brandDark).lineWidth(1).moveTo(335, calcY + 62).lineTo(540, calcY + 62).stroke();
       addCalcLine('Total Amount:', `Rs. ${Number(totalAmount).toFixed(2)}`, calcY + 72, true, true);
 
       // Left Info Box (Compliance)
       doc.rect(40, calcY, 260, 100).fillAndStroke('#ffffff', borderGray);
-      doc.fillColor(brandDark).fontSize(8.5).font('Helvetica-Bold').text('100% Tax Compliant Digital Invoice', 52, calcY + 12);
-      doc.fillColor(textGray).fontSize(7.8).font('Helvetica').text('This invoice is electronically generated and digitally issued under Section 65B of the Indian Evidence Act.', 52, calcY + 26, { width: 236, lineGap: 2 });
-      doc.text('All payments are processed securely via Razorpay Payment Gateway.', 52, calcY + 60, { width: 236 });
+      if (isManualPayment) {
+        doc.fillColor(brandDark).fontSize(8.5).font('Helvetica-Bold').text('Direct Receipt / Tax Invoice', 52, calcY + 12);
+        doc.fillColor(textGray).fontSize(7.8).font('Helvetica').text(`This invoice is issued for collection received/recorded via ${paymentMode}. Recorded and verified directly by authorized staff.`, 52, calcY + 26, { width: 236, lineGap: 2 });
+        doc.text('Manual receipt — non-gateway payment.', 52, calcY + 60, { width: 236 });
+      } else {
+        doc.fillColor(brandDark).fontSize(8.5).font('Helvetica-Bold').text('100% Tax Compliant Digital Invoice', 52, calcY + 12);
+        doc.fillColor(textGray).fontSize(7.8).font('Helvetica').text('This invoice is electronically generated and digitally issued under Section 65B of the Indian Evidence Act.', 52, calcY + 26, { width: 236, lineGap: 2 });
+        doc.text('All online payments are processed securely via Razorpay Payment Gateway.', 52, calcY + 60, { width: 236 });
+      }
 
       // Terms & Conditions Footer
       const footerY = calcY + 120;
       doc.strokeColor(borderGray).lineWidth(0.8).moveTo(40, footerY).lineTo(555, footerY).stroke();
 
       doc.fillColor(brandDark).fontSize(8).font('Helvetica-Bold').text('Terms & Conditions:', 40, footerY + 8);
-      doc.fillColor(textGray).fontSize(7.5).font('Helvetica').text('1. Official credit reports are retrieved in real-time from authorized credit bureau registries.\n2. For customer support or dispute resolutions, contact info@ktrconsultants.in.\n3. All legal matters are subject to Lucknow (UP) Jurisdiction only.', 40, footerY + 20, { lineGap: 2 });
+      doc.fillColor(textGray).fontSize(7.5).font('Helvetica').text('1. Fees once paid are non-refundable after services are initiated or rendered.\n2. For support or invoice inquiries, contact info@ktrconsultants.in.\n3. All legal matters are subject to Lucknow (UP) Jurisdiction only.', 40, footerY + 20, { lineGap: 2 });
 
       // Digitally Verified Stamp Box
       doc.rect(420, footerY + 8, 135, 45).fillAndStroke('#f0fdf4', '#bbf7d0');
       doc.fillColor(brandDark).fontSize(7.5).font('Helvetica-Bold').text('KTR CONSULTANTS', 420, footerY + 14, { width: 135, align: 'center' });
-      doc.fillColor('#16a34a').fontSize(7).font('Helvetica-Bold').text('DIGITALLY VERIFIED', 420, footerY + 26, { width: 135, align: 'center' });
-      doc.fillColor(textGray).fontSize(6.5).font('Helvetica').text('Authorized Signatory', 420, footerY + 38, { width: 135, align: 'center' });
+      doc.fillColor('#16a34a').fontSize(7).font('Helvetica-Bold').text(isManualPayment ? 'DIRECT RECEIPT' : 'DIGITALLY VERIFIED', 420, footerY + 26, { width: 135, align: 'center' });
+      doc.fillColor(textGray).fontSize(6.5).font('Helvetica').text('Authorized Accounts Signatory', 420, footerY + 38, { width: 135, align: 'center' });
 
       doc.end();
     } catch (err) {

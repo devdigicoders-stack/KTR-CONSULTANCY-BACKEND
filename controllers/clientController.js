@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const ClientProfile = require('../models/ClientProfile');
+const ShareLink = require('../models/ShareLink');
 
 // Helper to calculate age from DOB (Formula: Current Year - Year of Birth)
 const calculateAge = (dob) => {
@@ -53,6 +54,22 @@ exports.submitProfile = async (req, res) => {
     if (Array.isArray(applicantsList) && applicantsList.length > 0) {
       applicantsList = applicantsList.map((app, idx) => {
         const appDob = app.dob ? new Date(app.dob) : undefined;
+        let appCustomFields = [];
+        if (app.customFields) {
+          try {
+            appCustomFields = typeof app.customFields === 'string' ? JSON.parse(app.customFields) : app.customFields;
+          } catch (e) {
+            appCustomFields = [];
+          }
+          if (Array.isArray(appCustomFields)) {
+            appCustomFields = appCustomFields.filter(cf => cf && cf.fieldName && cf.fieldName.trim()).map(cf => ({
+              fieldName: cf.fieldName.trim(),
+              fieldValue: String(cf.fieldValue || '').trim()
+            }));
+          } else {
+            appCustomFields = [];
+          }
+        }
         return {
           fullName: (app.fullName || `Applicant ${idx + 1}`).trim(),
           dob: appDob,
@@ -68,7 +85,8 @@ exports.submitProfile = async (req, res) => {
           city: app.city || '',
           state: app.state || '',
           pincode: app.pincode || '',
-          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`)
+          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`),
+          customFields: appCustomFields
         };
       });
     }
@@ -95,7 +113,28 @@ exports.submitProfile = async (req, res) => {
       };
     }
 
+    // Parse custom fields if provided
+    let customFieldsList = [];
+    if (req.body.customFields) {
+      try {
+        customFieldsList = typeof req.body.customFields === 'string' ? JSON.parse(req.body.customFields) : req.body.customFields;
+      } catch (e) {
+        customFieldsList = [];
+      }
+    }
+    if (Array.isArray(customFieldsList)) {
+      customFieldsList = customFieldsList
+        .filter(cf => cf && typeof cf === 'object' && cf.fieldName && cf.fieldName.trim())
+        .map(cf => ({
+          fieldName: cf.fieldName.trim(),
+          fieldValue: String(cf.fieldValue || '').trim()
+        }));
+    } else {
+      customFieldsList = [];
+    }
+
     const notesContent = req.body.caseNotes || req.body.notes || '';
+    const internalNotesContent = req.body.internalNotes || '';
     const profileData = {
       ...req.body,
       ...docUpdates,
@@ -117,7 +156,9 @@ exports.submitProfile = async (req, res) => {
       user: userId,
       status: 'Pending',
       notes: notesContent,
-      caseNotes: notesContent
+      caseNotes: notesContent,
+      internalNotes: internalNotesContent,
+      customFields: customFieldsList
     };
 
     // Create new profile always (1-to-many relationship)
@@ -146,10 +187,14 @@ exports.getMyProfile = async (req, res) => {
 
 // @desc    Get all clients added by the user
 // @route   GET /api/clients/my-clients
+// @desc    Get all clients added by the user
+// @route   GET /api/clients/my-clients
 // @access  Private (User Only)
 exports.getMyClients = async (req, res) => {
   try {
-    const clients = await ClientProfile.find({ user: req.adminId }).populate('user', 'name email').sort({ createdAt: -1 });
+    const clients = await ClientProfile.find({ user: req.adminId, isDeleted: { $ne: true } })
+      .populate('user', 'name email')
+      .sort({ displayOrder: 1, createdAt: -1 });
     res.json({ success: true, data: clients });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -162,7 +207,9 @@ exports.getMyClients = async (req, res) => {
 exports.getAllClients = async (req, res) => {
   try {
     // Assuming admin authorization is handled in routes with a role check
-    const clients = await ClientProfile.find().populate('user', 'name email').sort({ createdAt: -1 });
+    const clients = await ClientProfile.find({ isDeleted: { $ne: true } })
+      .populate('user', 'name email')
+      .sort({ displayOrder: 1, createdAt: -1 });
     res.json({ success: true, data: clients });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -177,6 +224,10 @@ exports.getClientById = async (req, res) => {
     const client = await ClientProfile.findById(req.params.id).populate('user', 'name email');
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    if (client.isDeleted && req.user?.role !== 'admin') {
+      return res.status(404).json({ success: false, message: 'Client record not found or has been deleted' });
     }
 
     // Auto-heal empty standard document fields from customDocuments if available
@@ -246,6 +297,9 @@ exports.getClientById = async (req, res) => {
 
     // Convert mongoose doc to object and attach extras
     const clientData = client.toObject();
+    clientData.documentCustomTitles = mapToPlainObject(client.documentCustomTitles);
+    clientData.documentNotes = mapToPlainObject(client.documentNotes);
+    clientData.documentPasswords = mapToPlainObject(client.documentPasswords);
     clientData.documentsList = documents;
     clientData.cibilReports = cibilReports;
     clientData.creditInfo = creditInfo;
@@ -258,15 +312,27 @@ exports.getClientById = async (req, res) => {
   }
 };
 
-// @desc    Update client status (Approve/Reject)
+// @desc    Update client status (Staff-controlled Case Status)
 // @route   PATCH /api/clients/:id/status
-// @access  Private (Admin Only)
+// @access  Private (Admin / Staff)
 exports.updateClientStatus = async (req, res) => {
   try {
     const { status, adminRemarks } = req.body;
     
-    if (!['Pending', 'Approved', 'Rejected'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid status' });
+    const allowedStatuses = [
+      'Documents Pending',
+      'Bank Side Pending',
+      'Client Side Pending',
+      'Case Sanctioned',
+      'Disbursement Pendency',
+      'Case Disbursed',
+      'Pending',
+      'Approved',
+      'Rejected'
+    ];
+
+    if (!status || !allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid case status' });
     }
 
     const client = await ClientProfile.findById(req.params.id);
@@ -274,15 +340,93 @@ exports.updateClientStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
+    const oldStatus = client.status;
     client.status = status;
     if (adminRemarks) {
       client.adminRemarks = adminRemarks;
     }
 
+    // Record status update in editHistory
+    if (!client.editHistory) {
+      client.editHistory = [];
+    }
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Case Status Updated',
+      details: `Status updated from "${oldStatus || 'N/A'}" to "${status}"`,
+      timestamp: new Date()
+    });
+
     await client.save();
-    res.json({ success: true, message: `Client profile marked as ${status}`, data: client });
+    res.json({ success: true, message: `Case status marked as ${status}`, data: client });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Update Client Status Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Toggle client hide status (Hide or Unhide client from active list)
+// @route   PATCH /api/clients/:id/toggle-hide
+// @access  Private (Staff / Admin)
+exports.toggleHideClient = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    client.isHidden = req.body.isHidden !== undefined ? req.body.isHidden : !client.isHidden;
+
+    if (!client.editHistory) {
+      client.editHistory = [];
+    }
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: client.isHidden ? 'Client Hidden' : 'Client Unhidden',
+      details: client.isHidden ? 'Client hidden from active client list' : 'Client unhidden and restored to active list',
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: client.isHidden ? 'Client hidden from active list' : 'Client restored to active list',
+      data: client
+    });
+  } catch (error) {
+    console.error('Toggle Hide Client Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Reorder clients (Drag-and-Drop ordering persistence)
+// @route   POST /api/clients/reorder
+// @access  Private (Staff / Admin)
+exports.reorderClients = async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'orderedIds array is required' });
+    }
+
+    const bulkOps = orderedIds.map((id, index) => ({
+      updateOne: {
+        filter: { _id: id },
+        update: { $set: { displayOrder: index } }
+      }
+    }));
+
+    await ClientProfile.bulkWrite(bulkOps);
+
+    res.json({ success: true, message: 'Client order saved successfully' });
+  } catch (error) {
+    console.error('Reorder Clients Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
 
@@ -325,6 +469,7 @@ exports.updateClient = async (req, res) => {
       { key: 'loanType', label: 'Loan Type' },
       { key: 'notes', label: 'Case Notes' },
       { key: 'caseNotes', label: 'Case Notes' },
+      { key: 'internalNotes', label: 'Internal Notes' },
       { key: 'addressLine1', label: 'Address' },
       { key: 'status', label: 'Status' }
     ];
@@ -350,6 +495,24 @@ exports.updateClient = async (req, res) => {
       });
     }
 
+    // Parse custom fields if provided
+    if (req.body.customFields !== undefined) {
+      let customFieldsList = [];
+      try {
+        customFieldsList = typeof req.body.customFields === 'string' ? JSON.parse(req.body.customFields) : req.body.customFields;
+      } catch (e) {
+        customFieldsList = [];
+      }
+      if (Array.isArray(customFieldsList)) {
+        client.customFields = customFieldsList
+          .filter(cf => cf && typeof cf === 'object' && cf.fieldName && cf.fieldName.trim())
+          .map(cf => ({
+            fieldName: cf.fieldName.trim(),
+            fieldValue: String(cf.fieldValue || '').trim()
+          }));
+      }
+    }
+
     // Parse multiple applicants if provided
     let applicantsList = null;
     if (req.body.applicants) {
@@ -363,6 +526,22 @@ exports.updateClient = async (req, res) => {
     if (Array.isArray(applicantsList)) {
       client.applicants = applicantsList.map((app, idx) => {
         const appDob = app.dob ? new Date(app.dob) : undefined;
+        let appCustomFields = [];
+        if (app.customFields) {
+          try {
+            appCustomFields = typeof app.customFields === 'string' ? JSON.parse(app.customFields) : app.customFields;
+          } catch (e) {
+            appCustomFields = [];
+          }
+          if (Array.isArray(appCustomFields)) {
+            appCustomFields = appCustomFields.filter(cf => cf && cf.fieldName && cf.fieldName.trim()).map(cf => ({
+              fieldName: cf.fieldName.trim(),
+              fieldValue: String(cf.fieldValue || '').trim()
+            }));
+          } else {
+            appCustomFields = [];
+          }
+        }
         return {
           fullName: (app.fullName || `Applicant ${idx + 1}`).trim(),
           dob: appDob,
@@ -378,7 +557,8 @@ exports.updateClient = async (req, res) => {
           city: app.city || '',
           state: app.state || '',
           pincode: app.pincode || '',
-          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`)
+          relationship: app.relationship || (idx === 0 ? 'Primary Applicant' : `Co-Applicant ${idx}`),
+          customFields: appCustomFields
         };
       });
       if (client.applicants.length > 0) {
@@ -388,6 +568,41 @@ exports.updateClient = async (req, res) => {
           client.age = client.applicants[0].age;
         }
       }
+    } else if (req.body.coApplicant && req.body.coApplicant.fullName) {
+      const coApp = req.body.coApplicant;
+      const coDob = coApp.dob ? new Date(coApp.dob) : undefined;
+      const existingCoIdx = (client.applicants || []).findIndex((a, i) => i > 0 && (a.fullName === coApp.fullName || (a.mobile && a.mobile === coApp.mobile)));
+      const coObj = {
+        fullName: coApp.fullName.trim(),
+        dob: coDob,
+        age: coDob ? calculateAge(coDob) : (coApp.age || null),
+        mobile: (coApp.mobile || '').trim(),
+        occupation: (coApp.occupation || '').trim(),
+        panNumber: (coApp.panNumber || '').toUpperCase(),
+        aadhaarNumber: (coApp.aadhaarNumber || '').trim(),
+        motherName: (coApp.motherName || '').trim(),
+        relationship: coApp.relationship || 'Co-Applicant',
+        customFields: coApp.customFields || []
+      };
+      if (!client.applicants || client.applicants.length === 0) {
+        client.applicants = [{
+          fullName: client.fullName,
+          dob: client.dob,
+          age: client.age,
+          mobile: client.mobile,
+          occupation: client.occupation,
+          panNumber: client.panNumber,
+          aadhaarNumber: client.aadhaarNumber,
+          relationship: 'Primary Applicant'
+        }];
+      }
+      if (existingCoIdx !== -1) {
+        client.applicants[existingCoIdx] = { ...client.applicants[existingCoIdx], ...coObj };
+      } else {
+        client.applicants.push(coObj);
+      }
+      client.hasCoApplicant = true;
+      client.coApplicant = coObj;
     } else if (req.body.dob) {
       const d = new Date(req.body.dob);
       if (!isNaN(d.getTime())) {
@@ -1020,9 +1235,9 @@ exports.deleteFolderDocument = async (req, res) => {
   }
 };
 
-// @desc    Delete client and related data
+// @desc    Soft-delete client and create secure Super Admin backup archive
 // @route   DELETE /api/clients/:id
-// @access  Private (Admin Only)
+// @access  Private (Staff & Admin)
 exports.deleteClient = async (req, res) => {
   try {
     const client = await ClientProfile.findById(req.params.id);
@@ -1030,21 +1245,284 @@ exports.deleteClient = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    // Delete related CreditInfo
+    if (client.isDeleted) {
+      return res.status(400).json({ success: false, message: 'Client is already deleted' });
+    }
+
+    const DeletedClientBackup = require('../models/DeletedClientBackup');
     const CreditInfo = require('../models/CreditInfo');
-    await CreditInfo.findOneAndDelete({ client: client._id });
-
-    // Delete related CibilReport
     const CibilReport = require('../models/CibilReport');
-    await CibilReport.deleteMany({ client_id: client._id.toString() });
 
-    // Delete the client
-    await ClientProfile.findByIdAndDelete(req.params.id);
+    // Fetch related records without deleting them
+    const creditInfo = await CreditInfo.findOne({ client: client._id });
+    const cibilReports = await CibilReport.find({ client_id: client._id.toString() });
 
-    res.json({ success: true, message: 'Client and associated data deleted successfully' });
+    const deleterId = req.user?._id || req.adminId;
+    const deleterName = req.user?.name || 'Staff/Admin';
+    const deleterRole = req.user?.role || 'staff';
+    const reason = req.body?.reason || req.query?.reason || 'Deleted via Staff Portal';
+
+    // 1. Create complete immutable snapshot backup in DeletedClientBackup
+    const clientSnapshot = client.toObject();
+    const backupEntry = new DeletedClientBackup({
+      originalClientId: client._id,
+      fullName: client.fullName || 'Client',
+      mobile: client.mobile || '',
+      email: client.email || '',
+      panNumber: client.panNumber || '',
+      aadhaarNumber: client.aadhaarNumber || '',
+      occupation: client.occupation || '',
+      loanAmount: client.loanAmount || 0,
+      caseType: client.caseType || client.loanType || '',
+      status: client.status || 'Documents Pending',
+      clientSnapshot: clientSnapshot,
+      relatedCreditInfo: creditInfo ? creditInfo.toObject() : null,
+      relatedCibilReports: cibilReports.map(c => c.toObject()),
+      deletedBy: deleterId,
+      deletedByName: deleterName,
+      deletedByRole: deleterRole,
+      deletedAt: new Date(),
+      deletionReason: reason,
+      restored: false,
+      auditTrail: [{
+        action: 'Client Deleted',
+        actorId: deleterId,
+        actorName: deleterName,
+        actorRole: deleterRole,
+        details: `Deleted by ${deleterName} (${deleterRole}). Reason: ${reason}. Full snapshot archived.`,
+        timestamp: new Date()
+      }]
+    });
+    await backupEntry.save();
+
+    // 2. Mark ClientProfile as soft-deleted and log to audit history
+    client.isDeleted = true;
+    client.deletedAt = new Date();
+    client.deletedBy = deleterId;
+    client.deletedByName = deleterName;
+    client.deletedByRole = deleterRole;
+    client.deletionReason = reason;
+
+    if (!client.editHistory) {
+      client.editHistory = [];
+    }
+    client.editHistory.push({
+      editedBy: deleterId,
+      editorName: deleterName,
+      editorRole: deleterRole,
+      action: 'Client Deleted (Soft-Delete & Backed Up)',
+      details: `Client deleted by ${deleterName} (${deleterRole}). Reason: ${reason}. Complete backup preserved in Super Admin archive.`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+
+    res.json({
+      success: true,
+      message: 'Client deleted from active list. All data and documents have been securely backed up.',
+      backupId: backupEntry._id
+    });
   } catch (error) {
     console.error('Delete Client Error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Get all deleted client backups (Super Admin Only)
+// @route   GET /api/clients/super-admin/deleted-backups
+// @access  Private (Super Admin Only)
+exports.getDeletedClientBackups = async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Super Admin access only.' });
+    }
+
+    const DeletedClientBackup = require('../models/DeletedClientBackup');
+    const { search, status } = req.query;
+
+    const filter = {};
+    if (status === 'restored') {
+      filter.restored = true;
+    } else if (status === 'deleted') {
+      filter.restored = false;
+    }
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      const regex = new RegExp(q, 'i');
+      filter.$or = [
+        { fullName: regex },
+        { mobile: regex },
+        { panNumber: regex },
+        { deletedByName: regex },
+        { deletionReason: regex },
+        { caseType: regex }
+      ];
+    }
+
+    const backups = await DeletedClientBackup.find(filter)
+      .sort({ deletedAt: -1 })
+      .lean();
+
+    // Map summary data for fast list rendering
+    const list = backups.map(b => {
+      const snap = b.clientSnapshot || {};
+      const docCount = (snap.customDocuments?.length || 0) +
+        (snap.customFolders?.reduce((acc, f) => acc + (f.documents?.length || 0), 0) || 0) +
+        (snap.deletedDocuments?.length || 0) +
+        (snap.otherDocs?.length || 0);
+
+      return {
+        _id: b._id,
+        originalClientId: b.originalClientId,
+        fullName: b.fullName || snap.fullName,
+        mobile: b.mobile || snap.mobile,
+        email: b.email || snap.email,
+        panNumber: b.panNumber || snap.panNumber,
+        loanAmount: b.loanAmount || snap.loanAmount,
+        caseType: b.caseType || snap.caseType || snap.loanType,
+        status: b.status || snap.status,
+        deletedBy: b.deletedBy,
+        deletedByName: b.deletedByName,
+        deletedByRole: b.deletedByRole,
+        deletedAt: b.deletedAt,
+        deletionReason: b.deletionReason,
+        restored: b.restored,
+        restoredAt: b.restoredAt,
+        restoredByName: b.restoredByName,
+        documentCount: docCount,
+        pendencyCount: snap.pendencies?.length || 0,
+        submissionCount: snap.formSubmissions?.length || 0,
+        editHistoryCount: snap.editHistory?.length || 0
+      };
+    });
+
+    res.json({
+      success: true,
+      data: list,
+      totalCount: list.length,
+      deletedCount: list.filter(b => !b.restored).length,
+      restoredCount: list.filter(b => b.restored).length
+    });
+  } catch (error) {
+    console.error('Get Deleted Client Backups Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Get complete single deleted client backup details (Super Admin Only)
+// @route   GET /api/clients/super-admin/deleted-backups/:id
+// @access  Private (Super Admin Only)
+exports.getDeletedClientBackupById = async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Super Admin access only.' });
+    }
+
+    const DeletedClientBackup = require('../models/DeletedClientBackup');
+    const backup = await DeletedClientBackup.findById(req.params.id);
+    if (!backup) {
+      return res.status(404).json({ success: false, message: 'Backup record not found' });
+    }
+
+    res.json({
+      success: true,
+      data: backup
+    });
+  } catch (error) {
+    console.error('Get Backup Detail Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Restore deleted client from backup (Super Admin Only)
+// @route   POST /api/clients/super-admin/restore/:id
+// @access  Private (Super Admin Only)
+exports.restoreDeletedClient = async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Super Admin access only.' });
+    }
+
+    const DeletedClientBackup = require('../models/DeletedClientBackup');
+    const backup = await DeletedClientBackup.findById(req.params.id);
+    if (!backup) {
+      return res.status(404).json({ success: false, message: 'Backup record not found' });
+    }
+
+    const restorerId = req.user?._id || req.adminId;
+    const restorerName = req.user?.name || 'Super Admin';
+    const notes = req.body?.notes || 'Restored by Super Admin';
+
+    // 1. Restore the ClientProfile
+    let client = await ClientProfile.findById(backup.originalClientId);
+
+    if (client) {
+      client.isDeleted = false;
+      client.deletedAt = null;
+      client.deletedBy = null;
+      client.deletedByName = null;
+      client.restoredAt = new Date();
+      client.restoredBy = restorerId;
+      client.restoredByName = restorerName;
+
+      if (!client.editHistory) client.editHistory = [];
+      client.editHistory.push({
+        editedBy: restorerId,
+        editorName: restorerName,
+        editorRole: 'admin',
+        action: 'Client Restored from Backup',
+        details: `Client restored by Super Admin ${restorerName}. Note: ${notes}`,
+        timestamp: new Date()
+      });
+
+      await client.save();
+    } else {
+      // If client document was somehow missing, resurrect completely from clientSnapshot!
+      const snapshot = backup.clientSnapshot;
+      delete snapshot._id;
+      snapshot._id = backup.originalClientId;
+      snapshot.isDeleted = false;
+      snapshot.restoredAt = new Date();
+      snapshot.restoredBy = restorerId;
+      snapshot.restoredByName = restorerName;
+      if (!snapshot.editHistory) snapshot.editHistory = [];
+      snapshot.editHistory.push({
+        editedBy: restorerId,
+        editorName: restorerName,
+        editorRole: 'admin',
+        action: 'Client Resurrected from Snapshot Backup',
+        details: `Client recreated from complete snapshot backup by Super Admin ${restorerName}. Note: ${notes}`,
+        timestamp: new Date()
+      });
+
+      client = await ClientProfile.create(snapshot);
+    }
+
+    // 2. Mark backup record as restored and record audit trail
+    backup.restored = true;
+    backup.restoredAt = new Date();
+    backup.restoredBy = restorerId;
+    backup.restoredByName = restorerName;
+    backup.restorationNotes = notes;
+    backup.auditTrail.push({
+      action: 'Client Restored to Active List',
+      actorId: restorerId,
+      actorName: restorerName,
+      actorRole: 'admin',
+      details: `Client restored by Super Admin ${restorerName}. Client is now fully visible and active.`,
+      timestamp: new Date()
+    });
+    await backup.save();
+
+    res.json({
+      success: true,
+      message: `Client "${client.fullName}" has been restored successfully to the active client list.`,
+      data: client
+    });
+  } catch (error) {
+    console.error('Restore Client Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
 
@@ -1188,6 +1666,22 @@ exports.updatePendencyStatus = async (req, res) => {
       pendency.resolutionNotes = resolutionNotes;
     }
 
+    // If this was a Banker Query pendency, also sync status to bankerQueries array
+    if (status === 'Resolved' && pendency.title && pendency.title.startsWith('Banker Query:')) {
+      const docTitleFromPendency = pendency.title.replace(/^Banker Query:\s*/, '').trim();
+      if (client.bankerQueries && client.bankerQueries.length > 0) {
+        client.bankerQueries.forEach(bq => {
+          if (bq.status !== 'Resolved' && (bq.documentTitle === docTitleFromPendency || (pendency.description && pendency.description.includes(bq.queryText)))) {
+            bq.status = 'Resolved';
+            bq.staffResponse = resolutionNotes || 'Resolved by staff';
+            bq.respondedAt = new Date();
+            bq.respondedByName = req.user?.name || 'Staff';
+          }
+        });
+        client.markModified('bankerQueries');
+      }
+    }
+
     client.editHistory.push({
       editedBy: req.user?._id || req.adminId,
       editorName: req.user?.name || 'Staff',
@@ -1250,6 +1744,42 @@ exports.deletePendency = async (req, res) => {
   }
 };
 
+// Map key sanitizers (MongoDB Map keys cannot contain '.' or '$')
+const sanitizeMapKey = (key) => (key ? String(key).replace(/\./g, '__dot__').replace(/\$/g, '__dollar__') : '');
+const desanitizeMapKey = (key) => (key ? String(key).replace(/__dot__/g, '.').replace(/__dollar__/g, '$') : '');
+
+const mapToPlainObject = (m) => {
+  if (!m) return {};
+  const plain = {};
+  if (m instanceof Map) {
+    m.forEach((val, k) => {
+      const original = desanitizeMapKey(k);
+      plain[original] = val;
+      plain[k] = val;
+    });
+  } else if (typeof m === 'object') {
+    Object.keys(m).forEach(k => {
+      const original = desanitizeMapKey(k);
+      plain[original] = m[k];
+      plain[k] = m[k];
+    });
+  }
+  return plain;
+};
+
+// Helper to normalize document titles and strip auto-increment suffixes
+const getNormalizedDocName = (rawName) => {
+  if (!rawName || typeof rawName !== 'string') return 'Document';
+  let clean = rawName.trim();
+  clean = clean.replace(/\s*\(\s*\d+\s*[\/of]\s*\d+[^)]*\)/gi, '');
+  clean = clean.replace(/\s*\(\s*(?:page|part|file)\s*\d+[^)]*\)/gi, '');
+  clean = clean.replace(/\s*-\s*page\s*\d+/gi, '');
+  clean = clean.replace(/\s*-\s*part\s*\d+/gi, '');
+  clean = clean.replace(/\s*-\s*file\s*\d+/gi, '');
+  clean = clean.replace(/\s*_\s*page\s*\d+/gi, '');
+  return clean.trim() || rawName.trim();
+};
+
 // Helper function to extract documents from a profile
 const extractDocuments = (profile) => {
   const docs = [];
@@ -1260,6 +1790,41 @@ const extractDocuments = (profile) => {
   };
   const docStatus = statusMapping[profile.status] || 'Pending';
 
+  const notesMap = profile.documentNotes || {};
+  const passwordsMap = profile.documentPasswords || {};
+  const customTitlesMap = profile.documentCustomTitles || {};
+
+  const cleanNote = (val) => {
+    if (!val) return '';
+    const str = String(val);
+    if (str.toLowerCase().includes('submitted via link') || str.toLowerCase().includes('client data collection form')) {
+      return 'Link Submission';
+    }
+    return str;
+  };
+
+  const getCustomTitle = (key) => {
+    if (!key) return '';
+    const sKey = sanitizeMapKey(key);
+    if (customTitlesMap instanceof Map) return customTitlesMap.get(sKey) || customTitlesMap.get(key) || '';
+    if (typeof customTitlesMap === 'object') return customTitlesMap[sKey] || customTitlesMap[key] || '';
+    return '';
+  };
+
+  const getNote = (name) => {
+    if (!name) return '';
+    let raw = '';
+    if (notesMap instanceof Map) raw = notesMap.get(name) || '';
+    else if (typeof notesMap === 'object') raw = notesMap[name] || '';
+    return cleanNote(raw);
+  };
+  const getPassword = (name) => {
+    if (!name) return '';
+    if (passwordsMap instanceof Map) return passwordsMap.get(name) || '';
+    if (typeof passwordsMap === 'object') return passwordsMap[name] || '';
+    return '';
+  };
+
   if (profile.panCardUrl) {
     docs.push({
       id: `DOC-PAN-${profile._id.toString().substring(18)}`,
@@ -1268,6 +1833,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'PAN Card',
       file: profile.panCardUrl,
+      notes: getNote('PAN Card') || getNote('panCardUrl'),
+      password: getPassword('PAN Card') || getPassword('panCardUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1280,6 +1847,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Aadhaar Card',
       file: profile.aadhaarUrl,
+      notes: getNote('Aadhaar Card') || getNote('aadhaarUrl'),
+      password: getPassword('Aadhaar Card') || getPassword('aadhaarUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1292,6 +1861,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Salary Slips',
       file: profile.salarySlipUrl,
+      notes: getNote('Salary Slips') || getNote('salarySlipUrl'),
+      password: getPassword('Salary Slips') || getPassword('salarySlipUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1304,6 +1875,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'ITR',
       file: profile.itrUrl,
+      notes: getNote('Income Tax Return (ITR)') || getNote('itrUrl'),
+      password: getPassword('Income Tax Return (ITR)') || getPassword('itrUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1316,6 +1889,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Form 16',
       file: profile.form16Url,
+      notes: getNote('Form 16') || getNote('form16Url'),
+      password: getPassword('Form 16') || getPassword('form16Url'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1328,6 +1903,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Bank Statements',
       file: profile.bankStatementUrl,
+      notes: getNote('Bank Statements') || getNote('bankStatementUrl'),
+      password: getPassword('Bank Statements') || getPassword('bankStatementUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1340,18 +1917,23 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Property Documents',
       file: profile.propertyDocUrl,
+      notes: getNote('Property Documents') || getNote('propertyDocUrl'),
+      password: getPassword('Property Documents') || getPassword('propertyDocUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
   }
   if (profile.idProofUrl) {
+    const idName = `ID Proof (${profile.idProofType || 'Identity'})`;
     docs.push({
       id: `DOC-ID-${profile._id.toString().substring(18)}`,
       docType: 'idProofUrl',
-      name: `ID Proof (${profile.idProofType || 'Identity'})`,
+      name: idName,
       client: profile.fullName,
       category: 'ID Proof',
       file: profile.idProofUrl,
+      notes: getNote(idName) || getNote('idProofUrl'),
+      password: getPassword(idName) || getPassword('idProofUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1364,6 +1946,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Address Proof',
       file: profile.addressProofUrl,
+      notes: getNote('Address Proof') || getNote('addressProofUrl'),
+      password: getPassword('Address Proof') || getPassword('addressProofUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1376,6 +1960,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Photograph',
       file: profile.photoUrl,
+      notes: getNote('Passport Photograph') || getNote('photoUrl'),
+      password: getPassword('Passport Photograph') || getPassword('photoUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1388,6 +1974,8 @@ const extractDocuments = (profile) => {
       client: profile.fullName,
       category: 'Other Documents',
       file: profile.otherDocUrl,
+      notes: getNote('Other Document') || getNote('otherDocUrl'),
+      password: getPassword('Other Document') || getPassword('otherDocUrl'),
       uploaded: profile.createdAt,
       status: docStatus
     });
@@ -1397,13 +1985,18 @@ const extractDocuments = (profile) => {
   if (profile.customDocuments && profile.customDocuments.length > 0) {
     profile.customDocuments.forEach((doc) => {
       if (docs.some(d => d.file === doc.fileUrl)) return;
+      const customTitle = getCustomTitle(doc.fileUrl) || (doc._id && getCustomTitle(doc._id.toString())) || doc.fileTitle;
+      const effectiveName = customTitle || doc.name || 'Document';
       docs.push({
         id: doc._id ? doc._id.toString() : `DOC-CUS-${Math.random().toString(36).substring(7)}`,
         docType: 'customDocument',
-        name: doc.name || 'Document',
+        name: effectiveName,
+        fileTitle: customTitle || doc.fileTitle || doc.name,
         client: profile.fullName,
         category: doc.category || 'General Document',
         file: doc.fileUrl,
+        notes: doc.notes || getNote(effectiveName) || getNote(doc.name),
+        password: doc.password || getPassword(effectiveName) || getPassword(doc.name) || '',
         uploaded: doc.uploadedAt || profile.createdAt,
         status: docStatus
       });
@@ -1414,13 +2007,19 @@ const extractDocuments = (profile) => {
   if (profile.otherDocs && profile.otherDocs.length > 0) {
     profile.otherDocs.forEach((url, i) => {
       if (docs.some(d => d.file === url)) return;
+      const legName = `Additional Document ${i+1}`;
+      const customTitle = getCustomTitle(url) || getCustomTitle(legName);
+      const effectiveName = customTitle || legName;
       docs.push({
         id: `DOC-OTH-${profile._id.toString().substring(18)}-${i}`,
         docType: 'otherDocs',
-        name: `Additional Document ${i+1}`,
+        name: effectiveName,
+        fileTitle: effectiveName,
         client: profile.fullName,
         category: 'Other Documents',
         file: url,
+        notes: getNote(effectiveName) || getNote(legName),
+        password: getPassword(effectiveName) || getPassword(legName) || '',
         uploaded: profile.createdAt,
         status: docStatus
       });
@@ -1432,13 +2031,19 @@ const extractDocuments = (profile) => {
       const fName = folder.folderName || folder.name || 'Folder';
       if (folder.documents && folder.documents.length > 0) {
         folder.documents.forEach((doc) => {
+          const customTitle = getCustomTitle(doc.fileUrl) || (doc._id && getCustomTitle(doc._id.toString())) || doc.fileTitle;
+          const effectiveName = customTitle || doc.name;
+          const fDocName = customTitle ? `${customTitle} (${fName})` : `${doc.name} (${fName})`;
           docs.push({
             id: doc._id ? doc._id.toString() : `DOC-FLD-${Math.random().toString(36).substring(7)}`,
             docType: 'customFolderDoc',
-            name: `${doc.name} (${fName})`,
+            name: fDocName,
+            fileTitle: effectiveName,
             client: profile.fullName,
             category: fName,
             file: doc.fileUrl,
+            notes: doc.notes || getNote(effectiveName) || getNote(doc.name) || getNote(fDocName),
+            password: doc.password || getPassword(effectiveName) || getPassword(doc.name) || getPassword(fDocName) || '',
             uploaded: doc.uploadedAt || profile.createdAt,
             status: docStatus
           });
@@ -1447,6 +2052,40 @@ const extractDocuments = (profile) => {
     });
   }
   
+  // Link Submission mapping: simplify labels and attach submission details for staff
+  const formSubmissions = profile.formSubmissions || [];
+  docs.forEach(d => {
+    const rawNote = d.notes ? String(d.notes) : '';
+    const matchingSub = formSubmissions.find(sub => 
+      sub.uploadedFiles && sub.uploadedFiles.some(f => f.fileUrl === d.file)
+    );
+
+    const isLinkDoc = matchingSub || (
+      rawNote.toLowerCase().includes('link submission') || 
+      rawNote.toLowerCase().includes('submitted via link') ||
+      rawNote.toLowerCase().includes('client data collection form')
+    );
+
+    if (isLinkDoc) {
+      d.notes = 'Link Submission';
+      d.isLinkSubmission = true;
+      const sub = matchingSub || formSubmissions[0];
+      if (sub) {
+        d.submissionDetails = {
+          _id: sub._id,
+          formId: sub.formId,
+          formTitle: sub.formTitle || 'Client Data Collection Form',
+          submittedAt: sub.submittedAt,
+          submittedData: sub.submittedData || {},
+          submittedFields: sub.submittedFields || [],
+          uploadedFiles: sub.uploadedFiles || [],
+          summaryText: sub.summaryText || '',
+          sourceLabel: 'Link Submission'
+        };
+      }
+    }
+  });
+
   if (profile.documentOrder && Array.isArray(profile.documentOrder) && profile.documentOrder.length > 0) {
     const order = profile.documentOrder;
     docs.sort((a, b) => {
@@ -1624,11 +2263,24 @@ exports.getDashboardStats = async (req, res) => {
 // @access  Public
 exports.getPublicSharedClientDocs = async (req, res) => {
   try {
-    const rawId = req.params.id;
+    const rawId = (req.params.id || '').trim();
     let client = null;
+    let sharedDocTokens = null;
 
-    if (mongoose.Types.ObjectId.isValid(rawId)) {
-      client = await ClientProfile.findById(rawId);
+    // 1. Check if rawId matches a short share link code (e.g. 'abc123')
+    if (rawId && rawId.length <= 16) {
+      const shareLink = await ShareLink.findOne({ code: rawId.toLowerCase() });
+      if (shareLink) {
+        client = await ClientProfile.findById(shareLink.clientId);
+        sharedDocTokens = shareLink.documents || [];
+      }
+    }
+
+    // 2. Fallback to direct client ObjectId / applicationId / refId
+    if (!client) {
+      if (mongoose.Types.ObjectId.isValid(rawId)) {
+        client = await ClientProfile.findById(rawId);
+      }
     }
     
     if (!client) {
@@ -1658,34 +2310,65 @@ exports.getPublicSharedClientDocs = async (req, res) => {
       return trimmed;
     };
 
-    const documentsList = extractDocuments(client).map(doc => ({
-      ...doc,
-      url: cleanDocUrl(doc.url)
-    }));
+    const documentsList = extractDocuments(client).map(doc => {
+      const sanitized = {
+        ...doc,
+        url: cleanDocUrl(doc.file || doc.url)
+      };
+      // Internal visibility only: Never expose form submission data or submissionDetails to bankers
+      delete sanitized.submissionDetails;
+      delete sanitized.isLinkSubmission;
+      if (sanitized.notes && (sanitized.notes.toLowerCase().includes('link submission') || sanitized.notes.toLowerCase().includes('submitted via link'))) {
+        sanitized.notes = '';
+      }
+      return sanitized;
+    });
 
-    const sanitizedCustomDocs = (client.customDocuments || []).map(cd => ({
-      _id: cd._id,
-      name: cd.name,
-      fileUrl: cleanDocUrl(cd.fileUrl),
-      docType: cd.docType,
-      category: cd.category,
-      notes: cd.notes,
-      uploadedAt: cd.uploadedAt,
-      uploadedByName: cd.uploadedByName
-    }));
+    const customTitlesMap = client.documentCustomTitles || {};
+    const getCustomTitle = (key) => {
+      if (!key) return '';
+      if (customTitlesMap instanceof Map) return customTitlesMap.get(key) || '';
+      if (typeof customTitlesMap === 'object') return customTitlesMap[key] || '';
+      return '';
+    };
+
+    const sanitizedCustomDocs = (client.customDocuments || []).map(cd => {
+      let notes = cd.notes || '';
+      if (notes.toLowerCase().includes('link submission') || notes.toLowerCase().includes('submitted via link')) {
+        notes = '';
+      }
+      const customTitle = getCustomTitle(cd.fileUrl) || (cd._id && getCustomTitle(cd._id.toString())) || cd.fileTitle;
+      return {
+        _id: cd._id,
+        name: customTitle || cd.name,
+        fileTitle: customTitle || cd.fileTitle || cd.name,
+        fileUrl: cleanDocUrl(cd.fileUrl),
+        docType: cd.docType,
+        category: cd.category,
+        notes,
+        password: cd.password || '',
+        uploadedAt: cd.uploadedAt,
+        uploadedByName: cd.uploadedByName
+      };
+    });
 
     const sanitizedFolders = (client.customFolders || []).map(f => ({
       _id: f._id,
       folderName: f.folderName || f.name,
       description: f.description,
-      documents: (f.documents || []).map(d => ({
-        _id: d._id,
-        name: d.name,
-        fileUrl: cleanDocUrl(d.fileUrl),
-        notes: d.notes,
-        uploadedAt: d.uploadedAt,
-        uploadedByName: d.uploadedByName
-      }))
+      documents: (f.documents || []).map(d => {
+        const customTitle = getCustomTitle(d.fileUrl) || (d._id && getCustomTitle(d._id.toString())) || d.fileTitle;
+        return {
+          _id: d._id,
+          name: customTitle || d.name,
+          fileTitle: customTitle || d.fileTitle || d.name,
+          fileUrl: cleanDocUrl(d.fileUrl),
+          notes: d.notes,
+          password: d.password || '',
+          uploadedAt: d.uploadedAt,
+          uploadedByName: d.uploadedByName
+        };
+      })
     }));
 
     const sanitizedApplicants = (client.applicants || []).map((app, idx) => ({
@@ -1749,7 +2432,10 @@ exports.getPublicSharedClientDocs = async (req, res) => {
         addressProofUrl: cleanDocUrl(client.addressProofUrl),
         otherDocs: (client.otherDocs || []).map(cleanDocUrl),
         documentOrder: client.documentOrder || [],
-        documentNotes: client.documentNotes ? Object.fromEntries(client.documentNotes) : {},
+        documentNotes: mapToPlainObject(client.documentNotes),
+        documentPasswords: mapToPlainObject(client.documentPasswords),
+        documentCustomTitles: mapToPlainObject(client.documentCustomTitles),
+        selectedDocTokens: sharedDocTokens,
         bankerQueries: (client.bankerQueries || []).map(bq => ({
           _id: bq._id,
           queryText: bq.queryText,
@@ -1787,11 +2473,49 @@ exports.updateDocumentOrder = async (req, res) => {
     }
 
     client.documentOrder = documentOrder;
+
+    // Physically reorder customDocuments based on documentOrder
+    if (client.customDocuments && client.customDocuments.length > 1) {
+      client.customDocuments.sort((a, b) => {
+        const idA = a._id ? a._id.toString() : '';
+        const idB = b._id ? b._id.toString() : '';
+        const getRank = (doc, idStr) => {
+          let idx = -1;
+          if (doc.fileUrl && (idx = documentOrder.indexOf(doc.fileUrl)) !== -1) return idx;
+          if (idStr && (idx = documentOrder.indexOf(idStr)) !== -1) return idx;
+          if (idStr && (idx = documentOrder.indexOf(`cd_${idStr}`)) !== -1) return idx;
+          return 999999;
+        };
+        return getRank(a, idA) - getRank(b, idB);
+      });
+      client.markModified('customDocuments');
+    }
+
+    // Physically reorder customFolders.documents based on documentOrder
+    if (client.customFolders && client.customFolders.length > 0) {
+      client.customFolders.forEach(folder => {
+        if (folder.documents && folder.documents.length > 1) {
+          folder.documents.sort((a, b) => {
+            const idA = a._id ? a._id.toString() : '';
+            const idB = b._id ? b._id.toString() : '';
+            const getRank = (doc, idStr) => {
+              let idx = -1;
+              if (doc.fileUrl && (idx = documentOrder.indexOf(doc.fileUrl)) !== -1) return idx;
+              if (idStr && (idx = documentOrder.indexOf(idStr)) !== -1) return idx;
+              return 999999;
+            };
+            return getRank(a, idA) - getRank(b, idB);
+          });
+        }
+      });
+      client.markModified('customFolders');
+    }
+
     await client.save();
 
     res.json({
       success: true,
-      message: 'Document serial order saved successfully',
+      message: 'Document and file serial order saved successfully',
       data: {
         documentOrder: client.documentOrder,
         documentsList: extractDocuments(client)
@@ -1803,25 +2527,30 @@ exports.updateDocumentOrder = async (req, res) => {
   }
 };
 
-// @desc    Update document notes for client
+// @desc    Update document notes and password for client
 // @route   PUT /api/clients/:id/document-notes
 // @access  Private
 exports.updateDocumentNotes = async (req, res) => {
   try {
-    const { docName, notes, docId, fileUrl } = req.body;
+    const { docName, notes, password, docId, fileUrl } = req.body;
     const client = await ClientProfile.findById(req.params.id);
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
     const noteText = (notes || '').trim();
+    const pwdText = (password || '').trim();
 
     if (!client.documentNotes) {
       client.documentNotes = new Map();
     }
+    if (!client.documentPasswords) {
+      client.documentPasswords = new Map();
+    }
 
     if (docName) {
       client.documentNotes.set(docName.trim(), noteText);
+      client.documentPasswords.set(docName.trim(), pwdText);
     }
 
     // Update in customDocuments if found
@@ -1831,6 +2560,7 @@ exports.updateDocumentNotes = async (req, res) => {
             (docName && cd.name?.trim() === docName.trim()) ||
             (fileUrl && cd.fileUrl === fileUrl)) {
           cd.notes = noteText;
+          cd.password = pwdText;
         }
       });
     }
@@ -1843,27 +2573,222 @@ exports.updateDocumentNotes = async (req, res) => {
               (docName && fDoc.name?.trim() === docName.trim()) ||
               (fileUrl && fDoc.fileUrl === fileUrl)) {
             fDoc.notes = noteText;
+            fDoc.password = pwdText;
           }
         });
       });
     }
 
     client.markModified('documentNotes');
+    client.markModified('documentPasswords');
     client.markModified('customDocuments');
     client.markModified('customFolders');
     await client.save();
 
     res.json({
       success: true,
-      message: 'Document note updated successfully',
+      message: 'Document note and password updated successfully',
       data: {
         docName,
         notes: noteText,
+        password: pwdText,
         client
       }
     });
   } catch (error) {
-    console.error('Update Document Notes Error:', error);
+    console.error('Update doc notes error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Update / rename document title (category or individual file)
+// @route   PUT /api/clients/:id/document-title
+// @access  Private (Admin / Staff)
+exports.updateDocumentTitle = async (req, res) => {
+  try {
+    const { targetType, oldTitle, newTitle, docId, fileUrl, folderId } = req.body;
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    if (!newTitle || !newTitle.trim()) {
+      return res.status(400).json({ success: false, message: 'New document title cannot be empty' });
+    }
+
+    const trimmedNew = newTitle.trim();
+    const trimmedOld = (oldTitle || '').trim();
+    const uploaderName = req.user?.name || 'Staff/Admin';
+
+    if (!client.documentCustomTitles) {
+      client.documentCustomTitles = new Map();
+    }
+    if (!client.documentNotes) {
+      client.documentNotes = new Map();
+    }
+    if (!client.documentPasswords) {
+      client.documentPasswords = new Map();
+    }
+    if (!client.documentOrder) {
+      client.documentOrder = [];
+    }
+
+    if (targetType === 'group' || (!docId && !fileUrl)) {
+      // 1. RENAMING A GROUP / CATEGORY
+      const prevGroup = trimmedOld || 'Document';
+
+      // Update customDocuments matching this group
+      if (client.customDocuments && client.customDocuments.length > 0) {
+        client.customDocuments.forEach(cd => {
+          const normName = getNormalizedDocName(cd.name);
+          const isGroupMatch = (cd.category && cd.category.trim().toLowerCase() === prevGroup.toLowerCase()) ||
+                              (normName && normName.toLowerCase() === prevGroup.toLowerCase()) ||
+                              (cd.name && cd.name.trim().toLowerCase() === prevGroup.toLowerCase());
+          if (isGroupMatch) {
+            cd.category = trimmedNew;
+            if (cd.name.trim().toLowerCase() === prevGroup.toLowerCase()) {
+              cd.name = trimmedNew;
+            } else if (normName && normName.toLowerCase() === prevGroup.toLowerCase()) {
+              // Replace prefix in cd.name, e.g. "Salary Slip (1/2)" -> "Form 16 (1/2)"
+              const suffix = cd.name.substring(normName.length);
+              cd.name = trimmedNew + suffix;
+            }
+          }
+        });
+      }
+
+      // Update customFolders if folderName or document category matches
+      if (client.customFolders && client.customFolders.length > 0) {
+        client.customFolders.forEach(f => {
+          if (f.folderName && f.folderName.trim().toLowerCase() === prevGroup.toLowerCase()) {
+            f.folderName = trimmedNew;
+          }
+          (f.documents || []).forEach(fDoc => {
+            const normName = getNormalizedDocName(fDoc.name);
+            if ((fDoc.category && fDoc.category.trim().toLowerCase() === prevGroup.toLowerCase()) ||
+                (normName && normName.toLowerCase() === prevGroup.toLowerCase())) {
+              fDoc.category = trimmedNew;
+              if (fDoc.name.trim().toLowerCase() === prevGroup.toLowerCase()) {
+                fDoc.name = trimmedNew;
+              }
+            }
+          });
+        });
+      }
+
+      // Migrate notes if keyed by old group title
+      if (client.documentNotes.has(prevGroup)) {
+        const noteVal = client.documentNotes.get(prevGroup);
+        client.documentNotes.set(trimmedNew, noteVal);
+        client.documentNotes.delete(prevGroup);
+      }
+
+      // Migrate passwords if keyed by old group title
+      if (client.documentPasswords.has(prevGroup)) {
+        const pwdVal = client.documentPasswords.get(prevGroup);
+        client.documentPasswords.set(trimmedNew, pwdVal);
+        client.documentPasswords.delete(prevGroup);
+      }
+
+      // Update documentOrder
+      client.documentOrder = client.documentOrder.map(item => (item === prevGroup ? trimmedNew : item));
+
+      // Record in documentCustomTitles
+      client.documentCustomTitles.set(sanitizeMapKey(prevGroup), trimmedNew);
+      if (fileUrl) {
+        client.documentCustomTitles.set(sanitizeMapKey(fileUrl), trimmedNew);
+      }
+
+      // Add to editHistory
+      if (!client.editHistory) client.editHistory = [];
+      client.editHistory.push({
+        editedBy: req.user?._id || req.adminId,
+        editorName: uploaderName,
+        editorRole: req.user?.role || 'staff',
+        action: 'Document Category Renamed',
+        details: `Renamed document category "${prevGroup}" to "${trimmedNew}"`,
+        timestamp: new Date()
+      });
+
+    } else {
+      // 2. RENAMING AN INDIVIDUAL FILE
+      let matched = false;
+
+      // Update customDocuments
+      if (client.customDocuments && client.customDocuments.length > 0) {
+        client.customDocuments.forEach(cd => {
+          const isDocMatch = (docId && cd._id?.toString() === docId.toString()) ||
+                             (fileUrl && cd.fileUrl === fileUrl);
+          if (isDocMatch) {
+            cd.fileTitle = trimmedNew;
+            // Ensure group category is preserved
+            const currentGroup = trimmedOld ? getNormalizedDocName(trimmedOld) : getNormalizedDocName(cd.name);
+            if (!cd.category || ['Document', 'Case Document', 'General Documents', 'Uploaded File'].includes(cd.category)) {
+              if (currentGroup) cd.category = currentGroup;
+            }
+            matched = true;
+          }
+        });
+      }
+
+      // Update customFolders
+      if (client.customFolders && client.customFolders.length > 0) {
+        client.customFolders.forEach(f => {
+          (f.documents || []).forEach(fDoc => {
+            const isDocMatch = (docId && fDoc._id?.toString() === docId.toString()) ||
+                               (fileUrl && fDoc.fileUrl === fileUrl);
+            if (isDocMatch) {
+              fDoc.fileTitle = trimmedNew;
+              matched = true;
+            }
+          });
+        });
+      }
+
+      // Save in documentCustomTitles
+      if (fileUrl) {
+        client.documentCustomTitles.set(sanitizeMapKey(fileUrl), trimmedNew);
+      }
+      if (docId) {
+        client.documentCustomTitles.set(sanitizeMapKey(docId.toString()), trimmedNew);
+      }
+
+      // Add to editHistory
+      if (!client.editHistory) client.editHistory = [];
+      client.editHistory.push({
+        editedBy: req.user?._id || req.adminId,
+        editorName: uploaderName,
+        editorRole: req.user?.role || 'staff',
+        action: 'Document File Renamed',
+        details: `Renamed document file "${trimmedOld || 'File'}" to "${trimmedNew}"`,
+        timestamp: new Date()
+      });
+    }
+
+    client.markModified('documentCustomTitles');
+    client.markModified('documentNotes');
+    client.markModified('documentPasswords');
+    client.markModified('documentOrder');
+    client.markModified('customDocuments');
+    client.markModified('customFolders');
+    client.markModified('editHistory');
+    await client.save();
+
+    const clientData = client.toObject();
+    clientData.documentCustomTitles = mapToPlainObject(client.documentCustomTitles);
+    clientData.documentNotes = mapToPlainObject(client.documentNotes);
+    clientData.documentPasswords = mapToPlainObject(client.documentPasswords);
+
+    res.json({
+      success: true,
+      message: 'Document title updated successfully',
+      data: {
+        client: clientData,
+        documentsList: extractDocuments(client)
+      }
+    });
+  } catch (error) {
+    console.error('Update document title error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
@@ -1925,15 +2850,25 @@ exports.addBankerQuery = async (req, res) => {
 
     client.bankerQueries.unshift(newQuery);
 
-    // Record audit trail
-    if (!client.editHistory) client.editHistory = [];
-    client.editHistory.push({
-      editorName: bankerName || 'Banker',
-      editorRole: 'banker',
-      action: 'Banker Query Raised',
-      details: `Query on "${newQuery.documentTitle}": ${newQuery.queryText}`,
-      timestamp: new Date()
-    });
+    // Format banker details for pendency description
+    const bankerInfo = [
+      newQuery.bankerName,
+      newQuery.bankerDesignation ? `(${newQuery.bankerDesignation})` : '',
+      newQuery.bankName ? `- ${newQuery.bankName}` : '',
+      newQuery.bankerMobile ? `[📞 ${newQuery.bankerMobile}]` : ''
+    ].filter(Boolean).join(' ');
+
+    // Push into Pendencies so staff can track and resolve it directly in the Pendency section
+    const newPendency = {
+      title: `Banker Query: ${newQuery.documentTitle}`,
+      description: `${newQuery.queryText}\n\nRaised by: ${bankerInfo || 'Bank Official'}${newQuery.bankerEmail ? ` | Email: ${newQuery.bankerEmail}` : ''}`,
+      status: 'Pending',
+      addedAt: new Date(),
+      addedByName: newQuery.bankerName ? `${newQuery.bankerName} (Banker)` : 'Bank Official'
+    };
+
+    if (!client.pendencies) client.pendencies = [];
+    client.pendencies.unshift(newPendency);
 
     await client.save();
 
@@ -2019,7 +2954,21 @@ exports.deleteBankerQuery = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found.' });
     }
 
+    const queryToDelete = (client.bankerQueries || []).find(q => q._id.toString() === queryId.toString());
     client.bankerQueries = (client.bankerQueries || []).filter(q => q._id.toString() !== queryId.toString());
+
+    if (queryToDelete) {
+      if (!client.editHistory) client.editHistory = [];
+      client.editHistory.push({
+        editedBy: req.user?._id || req.adminId,
+        editorName: req.user?.name || 'Staff/Admin',
+        editorRole: req.user?.role || 'staff',
+        action: 'Banker Query Removed',
+        details: `Removed banker query from ${queryToDelete.bankerName || 'Banker'} (${queryToDelete.bankName || 'Bank'}): "${queryToDelete.queryText || ''}"`,
+        timestamp: new Date()
+      });
+    }
+
     await client.save();
 
     res.json({
@@ -2032,3 +2981,108 @@ exports.deleteBankerQuery = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
+
+// @desc    Generate or retrieve a short branded share link for client documents
+// @route   POST /api/clients/:id/share-link or POST /api/clients/shared/:id/share-link
+// @access  Public / Private
+exports.createShareLink = async (req, res) => {
+  try {
+    const rawId = (req.params.id || '').trim();
+    const { documents } = req.body;
+
+    let client = null;
+    if (rawId && rawId.length <= 16) {
+      const existingShare = await ShareLink.findOne({ code: rawId.toLowerCase() });
+      if (existingShare) {
+        client = await ClientProfile.findById(existingShare.clientId);
+      }
+    }
+    if (!client && mongoose.Types.ObjectId.isValid(rawId)) {
+      client = await ClientProfile.findById(rawId);
+    }
+    if (!client) {
+      client = await ClientProfile.findOne({
+        $or: [
+          { applicationId: rawId },
+          { refId: rawId },
+          { _id: rawId.length === 24 ? rawId : null }
+        ].filter(Boolean)
+      });
+    }
+
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Case not found' });
+    }
+
+    // Clean documents list: array of string tokens
+    const docList = Array.isArray(documents) ? documents.filter(d => typeof d === 'string' && d.trim().length > 0).map(d => d.trim()) : [];
+    docList.sort();
+
+    // Helper to generate a random 6-character alphanumeric code
+    const generateCode = () => {
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let code = '';
+      for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return code;
+    };
+
+    // Check if an existing active ShareLink matches this client and exact document set
+    let existingLink = null;
+    if (docList.length === 0) {
+      existingLink = await ShareLink.findOne({
+        clientId: client._id,
+        $or: [{ documents: { $size: 0 } }, { documents: { $exists: false } }]
+      });
+    } else {
+      existingLink = await ShareLink.findOne({
+        clientId: client._id,
+        documents: { $all: docList, $size: docList.length }
+      });
+    }
+
+    if (existingLink) {
+      return res.json({
+        success: true,
+        code: existingLink.code,
+        shortUrl: `https://ktrconsultants.in/d/${existingLink.code}`
+      });
+    }
+
+    // Generate a unique 6-character code
+    let code = '';
+    let isUnique = false;
+    let attempts = 0;
+    while (!isUnique && attempts < 10) {
+      code = generateCode();
+      const duplicate = await ShareLink.findOne({ code });
+      if (!duplicate) {
+        isUnique = true;
+      }
+      attempts++;
+    }
+
+    if (!isUnique) {
+      code = client._id.toString().slice(-6);
+    }
+
+    const shareLink = new ShareLink({
+      code,
+      clientId: client._id,
+      documents: docList
+    });
+
+    await shareLink.save();
+
+    res.json({
+      success: true,
+      code,
+      shortUrl: `https://ktrconsultants.in/d/${code}`
+    });
+  } catch (error) {
+    console.error('Create Share Link Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
