@@ -106,21 +106,11 @@ const clientProfileSchema = new mongoose.Schema({
   otherDocUrl: { type: String },
   otherDocs: [{ type: String }],
 
-  // Application Status
+  // Application Status (Standard or Custom Staff-Written Status)
   status: {
     type: String,
-    enum: [
-      'Documents Pending',
-      'Bank Side Pending',
-      'Client Side Pending',
-      'Case Sanctioned',
-      'Disbursement Pendency',
-      'Case Disbursed',
-      'Pending',
-      'Approved',
-      'Rejected'
-    ],
     default: 'Documents Pending',
+    trim: true
   },
 
   // Visibility (Hidden from active list without deleting any data)
@@ -186,6 +176,7 @@ const clientProfileSchema = new mongoose.Schema({
   // Custom User/Staff Folders for Client
   customFolders: [{
     folderName: { type: String, required: true },
+    parentFolderName: { type: String, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     createdByName: { type: String },
     createdAt: { type: Date, default: Date.now },

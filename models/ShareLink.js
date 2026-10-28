@@ -8,11 +8,28 @@ const shareLinkSchema = new mongoose.Schema({
     index: true,
     trim: true
   },
+  linkType: {
+    type: String,
+    enum: ['client', 'repository', 'caseStudy'],
+    default: 'client'
+  },
   clientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ClientProfile',
-    required: true,
+    required: false,
     index: true
+  },
+  repositoryItemIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'RepositoryItem'
+  }],
+  caseStudyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CaseStudy'
+  },
+  title: {
+    type: String,
+    default: 'Shared Documents'
   },
   documents: [{
     type: String

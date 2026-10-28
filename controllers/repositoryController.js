@@ -1,5 +1,6 @@
 const RepositoryItem = require('../models/RepositoryItem');
 const RepositoryFolder = require('../models/RepositoryFolder');
+const ShareLink = require('../models/ShareLink');
 const fs = require('fs');
 const path = require('path');
 
@@ -41,7 +42,8 @@ exports.getFolders = async (req, res) => {
     const itemFolders = await RepositoryItem.distinct('folderName', query);
     
     // 2. Get explicitly created folders from RepositoryFolder collection
-    const createdFolders = await RepositoryFolder.distinct('folderName', query);
+    const folderRecords = await RepositoryFolder.find(query).sort({ parentFolderName: 1, folderName: 1 });
+    const createdFolders = folderRecords.map(f => f.folderName);
 
     const folderList = Array.from(new Set([...createdFolders, ...itemFolders])).filter(Boolean);
 
@@ -51,19 +53,20 @@ exports.getFolders = async (req, res) => {
       folderList.push(...fallback);
     }
 
-    res.json({ success: true, folders: folderList });
+    res.json({ success: true, folders: folderList, folderObjects: folderRecords });
   } catch (error) {
     console.error('Get Folders Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
 
-// @desc    Create new custom folder in repository
+// @desc    Create new custom folder or subfolder in repository
 // @route   POST /api/repository/folders
 // @access  Private (Staff/Admin)
 exports.createFolder = async (req, res) => {
   try {
     const folderName = req.body.folderName || req.body.name;
+    const parentFolderName = req.body.parentFolderName || null;
     const scope = req.body.scope || 'common';
     const description = req.body.description || '';
 
@@ -72,37 +75,38 @@ exports.createFolder = async (req, res) => {
     }
 
     const cleanName = folderName.trim();
+    const cleanParent = parentFolderName && parentFolderName.trim() && parentFolderName !== 'All' ? parentFolderName.trim() : null;
 
-    // Check if folder already exists in DB
-    const query = { folderName: cleanName, scope };
+    let parentId = null;
+    if (cleanParent) {
+      const parentDoc = await RepositoryFolder.findOne({ folderName: cleanParent, scope });
+      if (parentDoc) parentId = parentDoc._id;
+    }
+
+    const query = { folderName: cleanName, parentFolderName: cleanParent, scope };
     if (scope === 'private') {
       query.createdBy = req.adminId;
     }
 
     let folder = await RepositoryFolder.findOne(query);
     if (!folder) {
-      try {
-        folder = await RepositoryFolder.create({
-          folderName: cleanName,
-          scope,
-          createdBy: req.adminId,
-          createdByName: req.user?.name || 'Staff',
-          description: description.trim()
-        });
-      } catch (dbErr) {
-        if (dbErr.code === 11000) {
-          folder = await RepositoryFolder.findOne(query);
-        } else {
-          throw dbErr;
-        }
-      }
+      folder = await RepositoryFolder.create({
+        folderName: cleanName,
+        parentFolderName: cleanParent,
+        parentId,
+        scope,
+        createdBy: req.adminId,
+        createdByName: req.user?.name || 'Staff',
+        description: description.trim()
+      });
     }
 
     res.status(201).json({
       success: true,
       message: `Folder "${cleanName}" created successfully`,
       data: folder,
-      folderName: cleanName
+      folderName: cleanName,
+      parentFolderName: cleanParent
     });
   } catch (error) {
     console.error('Create Folder Error:', error);
@@ -110,12 +114,12 @@ exports.createFolder = async (req, res) => {
   }
 };
 
-// @desc    Rename custom repository folder
+// @desc    Rename custom repository folder or subfolder
 // @route   PUT /api/repository/folders/rename
 // @access  Private (Staff/Admin)
 exports.renameFolder = async (req, res) => {
   try {
-    const { oldName, newName, scope = 'common' } = req.body;
+    const { oldName, newName, parentFolderName, scope = 'common' } = req.body;
     if (!oldName || !newName || !newName.trim()) {
       return res.status(400).json({ success: false, message: 'Old and new folder names are required.' });
     }
@@ -124,28 +128,17 @@ exports.renameFolder = async (req, res) => {
     const cleanNew = newName.trim();
 
     const query = { folderName: cleanOld, scope };
-    if (scope === 'private') {
-      query.createdBy = req.adminId;
-    }
+    if (scope === 'private') query.createdBy = req.adminId;
+    if (parentFolderName) query.parentFolderName = parentFolderName.trim();
 
     // Update RepositoryFolder
     await RepositoryFolder.updateMany(query, { $set: { folderName: cleanNew } });
 
     // Update all items belonging to old folder
-    await RepositoryItem.updateMany(query, { $set: { folderName: cleanNew } });
+    await RepositoryItem.updateMany({ folderName: cleanOld, scope }, { $set: { folderName: cleanNew } });
 
-    // Also ensure the new folder exists in RepositoryFolder
-    const newFolderQuery = { folderName: cleanNew, scope };
-    if (scope === 'private') newFolderQuery.createdBy = req.adminId;
-    const existing = await RepositoryFolder.findOne(newFolderQuery);
-    if (!existing) {
-      await RepositoryFolder.create({
-        folderName: cleanNew,
-        scope,
-        createdBy: req.adminId,
-        createdByName: req.user?.name || 'Staff'
-      });
-    }
+    // Update child folders pointing to old folder
+    await RepositoryFolder.updateMany({ parentFolderName: cleanOld, scope }, { $set: { parentFolderName: cleanNew } });
 
     res.json({
       success: true,
@@ -154,6 +147,56 @@ exports.renameFolder = async (req, res) => {
     });
   } catch (error) {
     console.error('Rename Folder Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Generate secure shareable link for repository items
+// @route   POST /api/repository/share
+// @access  Private (Staff/Admin)
+exports.createShareLink = async (req, res) => {
+  try {
+    const { itemIds = [], title = 'Repository Documents' } = req.body;
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please select at least one document to share.' });
+    }
+
+    const generateCode = () => {
+      const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+      let result = '';
+      for (let i = 0; i < 6; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    };
+
+    let code = '';
+    let isUnique = false;
+    let attempts = 0;
+    while (!isUnique && attempts < 10) {
+      code = generateCode();
+      const duplicate = await ShareLink.findOne({ code });
+      if (!duplicate) isUnique = true;
+      attempts++;
+    }
+
+    const shareLink = new ShareLink({
+      code,
+      linkType: 'repository',
+      repositoryItemIds: itemIds,
+      title: title.trim(),
+      createdByName: req.user?.name || 'Staff'
+    });
+
+    await shareLink.save();
+
+    res.json({
+      success: true,
+      code,
+      shortUrl: `https://ktrconsultants.in/d/${code}`
+    });
+  } catch (error) {
+    console.error('Create Repo Share Link Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };

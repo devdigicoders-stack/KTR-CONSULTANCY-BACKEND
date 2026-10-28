@@ -12,7 +12,8 @@ const {
   uploadItem,
   updateItem,
   deleteItem,
-  bulkDeleteItems
+  bulkDeleteItems,
+  createShareLink
 } = require('../controllers/repositoryController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -49,5 +50,6 @@ router.post('/upload', protect, upload.array('files', 100), uploadItem);
 router.patch('/items/:id', protect, updateItem);
 router.delete('/items/:id', protect, deleteItem);
 router.post('/items/bulk-delete', protect, bulkDeleteItems);
+router.post('/share', protect, createShareLink);
 
 module.exports = router;

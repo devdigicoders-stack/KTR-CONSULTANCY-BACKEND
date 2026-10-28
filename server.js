@@ -64,6 +64,7 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const repositoryRoutes = require('./routes/repositoryRoutes');
 const formRoutes = require('./routes/formRoutes');
+const caseStudyRoutes = require('./routes/caseStudyRoutes');
 
 // Use Routes
 app.use('/api/cibil', cibilRoutes);
@@ -72,6 +73,7 @@ app.use('/api/clients', clientRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/repository', repositoryRoutes);
 app.use('/api/forms', formRoutes);
+app.use('/api/case-studies', caseStudyRoutes);
 app.use('/api/cibil-reports', cibilReportRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/enquiries', enquiryRoutes);

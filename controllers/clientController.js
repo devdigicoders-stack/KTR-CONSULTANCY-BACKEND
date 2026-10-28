@@ -319,21 +319,11 @@ exports.updateClientStatus = async (req, res) => {
   try {
     const { status, adminRemarks } = req.body;
     
-    const allowedStatuses = [
-      'Documents Pending',
-      'Bank Side Pending',
-      'Client Side Pending',
-      'Case Sanctioned',
-      'Disbursement Pendency',
-      'Case Disbursed',
-      'Pending',
-      'Approved',
-      'Rejected'
-    ];
-
-    if (!status || !allowedStatuses.includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid case status' });
+    if (!status || typeof status !== 'string' || !status.trim()) {
+      return res.status(400).json({ success: false, message: 'Status cannot be empty' });
     }
+
+    const cleanStatus = status.trim().substring(0, 100);
 
     const client = await ClientProfile.findById(req.params.id);
     if (!client) {
@@ -341,7 +331,7 @@ exports.updateClientStatus = async (req, res) => {
     }
 
     const oldStatus = client.status;
-    client.status = status;
+    client.status = cleanStatus;
     if (adminRemarks) {
       client.adminRemarks = adminRemarks;
     }
@@ -2088,14 +2078,21 @@ const extractDocuments = (profile) => {
 
   if (profile.documentOrder && Array.isArray(profile.documentOrder) && profile.documentOrder.length > 0) {
     const order = profile.documentOrder;
+    const GENERIC_TYPES = ['customDocument', 'folderDocument', 'other', 'otherDocs', 'customFolderDoc', 'legacy_customDocument', 'legacy_folderDocument', 'legacy_other', 'legacy_otherDocs'];
     docs.sort((a, b) => {
       const getRank = (item) => {
-        let idx = order.indexOf(item.docType);
-        if (idx !== -1) return idx;
+        if (item.file && order.indexOf(item.file) !== -1) return order.indexOf(item.file);
         if (item.id && order.indexOf(item.id) !== -1) return order.indexOf(item.id);
-        if (item.id && order.indexOf(`custom_${item.id}`) !== -1) return order.indexOf(`custom_${item.id}`);
+        if (item.id && order.indexOf(`cd_${item.id}`) !== -1) return order.indexOf(`cd_${item.id}`);
+        if (item.id && order.indexOf(`group_cd_${item.id}`) !== -1) return order.indexOf(`group_cd_${item.id}`);
+        if (item.name && order.indexOf(item.name) !== -1) return order.indexOf(item.name);
+        if (item.fileTitle && order.indexOf(item.fileTitle) !== -1) return order.indexOf(item.fileTitle);
         if (item.category && order.indexOf(item.category) !== -1) return order.indexOf(item.category);
-        return 999;
+        if (item.docType && !GENERIC_TYPES.includes(item.docType)) {
+          let idx = order.indexOf(item.docType);
+          if (idx !== -1) return idx;
+        }
+        return 999999;
       };
       return getRank(a) - getRank(b);
     });
@@ -2271,6 +2268,32 @@ exports.getPublicSharedClientDocs = async (req, res) => {
     if (rawId && rawId.length <= 16) {
       const shareLink = await ShareLink.findOne({ code: rawId.toLowerCase() });
       if (shareLink) {
+        if (shareLink.linkType === 'repository') {
+          const RepositoryItem = require('../models/RepositoryItem');
+          const repoItems = await RepositoryItem.find({ _id: { $in: shareLink.repositoryItemIds } });
+          const repoDocs = repoItems.map((item, idx) => ({
+            id: item._id.toString(),
+            name: item.name,
+            title: item.name,
+            fileTitle: item.name,
+            fileUrl: item.fileUrl,
+            category: item.folderName || 'Bank Forms',
+            docType: item.fileType || 'document',
+            notes: item.notes || '',
+            files: [{ title: item.name, fileUrl: item.fileUrl }]
+          }));
+
+          return res.json({
+            success: true,
+            client: {
+              fullName: shareLink.title || 'Repository Documents',
+              isRepositoryShare: true,
+              status: 'Repository'
+            },
+            documents: repoDocs
+          });
+        }
+
         client = await ClientProfile.findById(shareLink.clientId);
         sharedDocTokens = shareLink.documents || [];
       }
@@ -2484,6 +2507,10 @@ exports.updateDocumentOrder = async (req, res) => {
           if (doc.fileUrl && (idx = documentOrder.indexOf(doc.fileUrl)) !== -1) return idx;
           if (idStr && (idx = documentOrder.indexOf(idStr)) !== -1) return idx;
           if (idStr && (idx = documentOrder.indexOf(`cd_${idStr}`)) !== -1) return idx;
+          if (idStr && (idx = documentOrder.indexOf(`group_cd_${idStr}`)) !== -1) return idx;
+          if (doc.name && (idx = documentOrder.indexOf(doc.name)) !== -1) return idx;
+          if (doc.fileTitle && (idx = documentOrder.indexOf(doc.fileTitle)) !== -1) return idx;
+          if (doc.category && (idx = documentOrder.indexOf(doc.category)) !== -1) return idx;
           return 999999;
         };
         return getRank(a, idA) - getRank(b, idB);
@@ -2502,6 +2529,11 @@ exports.updateDocumentOrder = async (req, res) => {
               let idx = -1;
               if (doc.fileUrl && (idx = documentOrder.indexOf(doc.fileUrl)) !== -1) return idx;
               if (idStr && (idx = documentOrder.indexOf(idStr)) !== -1) return idx;
+              if (idStr && (idx = documentOrder.indexOf(`cd_${idStr}`)) !== -1) return idx;
+              if (idStr && (idx = documentOrder.indexOf(`group_cd_${idStr}`)) !== -1) return idx;
+              if (doc.name && (idx = documentOrder.indexOf(doc.name)) !== -1) return idx;
+              if (doc.fileTitle && (idx = documentOrder.indexOf(doc.fileTitle)) !== -1) return idx;
+              if (doc.category && (idx = documentOrder.indexOf(doc.category)) !== -1) return idx;
               return 999999;
             };
             return getRank(a, idA) - getRank(b, idB);
@@ -3014,9 +3046,8 @@ exports.createShareLink = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Case not found' });
     }
 
-    // Clean documents list: array of string tokens
+    // Clean documents list: array of string tokens (Keep caller's exact serial order!)
     const docList = Array.isArray(documents) ? documents.filter(d => typeof d === 'string' && d.trim().length > 0).map(d => d.trim()) : [];
-    docList.sort();
 
     // Helper to generate a random 6-character alphanumeric code
     const generateCode = () => {
