@@ -11,11 +11,13 @@ const {
   deleteCaseStudy,
   updateCustomFields,
   uploadCaseDocuments,
+  replaceCaseDocument,
   renameCaseDocument,
   deleteCaseDocument,
   reorderCaseDocuments,
   addBankerQuery,
   replyBankerQuery,
+  updateQueryStatus,
   runAiIntelligence,
   generateShareLink,
   getSharedCaseStudy,
@@ -43,7 +45,7 @@ const upload = multer({
   limits: { fileSize: 500 * 1024 * 1024 }
 });
 
-// Public Banker Shared Routes
+// Public Share Routes (Banker, Advocate, Valuer, CA)
 router.get('/shared/:code', getSharedCaseStudy);
 router.post('/shared/:code/query', submitBankerQueryFromShare);
 
@@ -59,19 +61,20 @@ router.patch('/:id/fields', protect, updateCustomFields);
 
 // Documents Management
 router.post('/:id/documents', protect, upload.array('files', 100), uploadCaseDocuments);
+router.post('/:id/documents/:docId/replace', protect, upload.single('file'), replaceCaseDocument);
 router.patch('/:id/documents/reorder', protect, reorderCaseDocuments);
 router.patch('/:id/documents/:docId', protect, renameCaseDocument);
 router.delete('/:id/documents/:docId', protect, deleteCaseDocument);
 
-// Banker Queries
+// Discussions & Queries
 router.post('/:id/queries', protect, addBankerQuery);
 router.put('/:id/queries/:queryId', protect, replyBankerQuery);
+router.patch('/:id/queries/:queryId/status', protect, updateQueryStatus);
 
-// AI Intelligence
+// AI Case Intelligence
 router.post('/:id/ai-analyze', protect, runAiIntelligence);
 
-// Share Link Generation
+// Secure Share Link Generation
 router.post('/:id/share', protect, generateShareLink);
 
 module.exports = router;
-

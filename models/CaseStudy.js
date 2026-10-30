@@ -11,6 +11,7 @@ const customFieldSchema = new mongoose.Schema({
   },
   options: [{ type: String }],
   isRequired: { type: Boolean, default: false },
+  isConfidential: { type: Boolean, default: false }, // Internal staff only
   order: { type: Number, default: 0 }
 }, { _id: false });
 
@@ -21,30 +22,94 @@ const caseDocumentSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
   fileType: { type: String, default: 'document' },
   fileSize: { type: Number, default: 0 },
-  category: { type: String, default: 'Property Legal' },
+  category: { type: String, default: 'General' },
   notes: { type: String, default: '' },
   order: { type: Number, default: 0 },
+  isConfidential: { type: Boolean, default: false },
+  originalFileName: { type: String },
+  replacedAt: { type: Date },
+  replacedByName: { type: String },
   uploadedAt: { type: Date, default: Date.now },
   uploadedByName: { type: String, default: 'Staff' }
 }, { _id: false });
 
-const bankerQuerySchema = new mongoose.Schema({
-  bankerName: { type: String, default: 'Banker' },
-  bankName: { type: String, default: 'Partner Bank' },
-  bankerPhone: { type: String, default: '' },
-  bankerEmail: { type: String, default: '' },
+const queryAttachmentSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  fileUrl: { type: String, required: true },
+  fileType: { type: String, default: 'document' },
+  fileSize: { type: Number, default: 0 }
+}, { _id: false });
+
+const queryReplySchema = new mongoose.Schema({
+  replyText: { type: String, required: true, trim: true },
+  repliedByName: { type: String, default: 'Staff' },
+  repliedByRole: { type: String, default: 'staff' },
+  repliedAt: { type: Date, default: Date.now },
+  attachments: [queryAttachmentSchema]
+});
+
+const caseDiscussionQuerySchema = new mongoose.Schema({
+  authorName: { type: String, default: 'Banker / Expert' },
+  authorRole: { 
+    type: String, 
+    enum: ['staff', 'banker', 'advocate', 'valuer', 'ca', 'client', 'other'],
+    default: 'banker' 
+  },
+  source: {
+    type: String,
+    enum: ['portal', 'phone', 'email', 'meeting', 'internal'],
+    default: 'portal'
+  },
+  authorPhone: { type: String, default: '' },
+  authorEmail: { type: String, default: '' },
+  bankName: { type: String, default: '' }, // For banker queries
   queryText: { type: String, required: true, trim: true },
   status: { 
     type: String, 
-    enum: ['Pending', 'In Progress', 'Answered', 'Resolved'], 
-    default: 'Pending' 
+    enum: ['Open', 'In Progress', 'Awaiting Documents', 'Answered', 'Resolved', 'Closed'], 
+    default: 'Open' 
   },
+  attachments: [queryAttachmentSchema],
+  replies: [queryReplySchema],
+  // Legacy compatibility fields
   staffReply: { type: String, default: '' },
   repliedAt: { type: Date },
   repliedByName: { type: String },
   isPhoneQuery: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
+
+const editHistorySchema = new mongoose.Schema({
+  timestamp: { type: Date, default: Date.now },
+  userName: { type: String, default: 'Staff' },
+  action: { type: String, required: true },
+  details: { type: String, default: '' },
+  fieldName: { type: String },
+  oldValue: { type: mongoose.Schema.Types.Mixed },
+  newValue: { type: mongoose.Schema.Types.Mixed }
+}, { _id: false });
+
+const shareSettingsSchema = new mongoose.Schema({
+  shareCode: { type: String, required: true },
+  passcode: { type: String, default: '' },
+  recipientName: { type: String, default: '' },
+  recipientType: { 
+    type: String, 
+    enum: ['Banker', 'Advocate', 'Valuer', 'Chartered Accountant', 'Client', 'Other'],
+    default: 'Banker' 
+  },
+  recipientPhone: { type: String, default: '' },
+  recipientEmail: { type: String, default: '' },
+  visibleSections: [{ type: String }], // 'fields', 'documents', 'queries'
+  visibleFieldIds: [{ type: String }],
+  visibleDocumentIds: [{ type: String }],
+  allowQueries: { type: Boolean, default: true },
+  expiresAt: { type: Date },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  viewsCount: { type: Number, default: 0 },
+  lastViewedAt: { type: Date }
+}, { _id: false });
 
 const caseStudySchema = new mongoose.Schema({
   caseNumber: {
@@ -53,6 +118,20 @@ const caseStudySchema = new mongoose.Schema({
     unique: true,
     index: true,
     trim: true
+  },
+  caseType: {
+    type: String,
+    enum: [
+      'Property Legal Issues',
+      'Title Verification',
+      'Client Financial Profile',
+      'Valuation',
+      'Project Funding',
+      'Loan Eligibility',
+      'Documentation Problems',
+      'Other'
+    ],
+    default: 'Property Legal Issues'
   },
   title: {
     type: String,
@@ -64,6 +143,7 @@ const caseStudySchema = new mongoose.Schema({
     default: '',
     trim: true
   },
+  // Generalized context / location
   propertyLocation: {
     type: String,
     default: '',
@@ -71,7 +151,6 @@ const caseStudySchema = new mongoose.Schema({
   },
   propertyType: {
     type: String,
-    enum: ['Residential', 'Commercial', 'Agricultural', 'Industrial', 'Plot / Land', 'Mixed Use', 'Other'],
     default: 'Residential'
   },
   estimatedLoanAmount: {
@@ -88,6 +167,7 @@ const caseStudySchema = new mongoose.Schema({
     default: '',
     trim: true
   },
+  // Strictly internal staff confidential notes
   discussionNotes: {
     type: String,
     default: '',
@@ -95,15 +175,55 @@ const caseStudySchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Draft', 'Active Discussion', 'Banker Review', 'Resolved', 'Closed'],
-    default: 'Active Discussion'
+    enum: [
+      'Open',
+      'Under Discussion',
+      'Awaiting Documents',
+      'Awaiting Bank Response',
+      'Resolved',
+      'Closed',
+      // Legacy enum values preserved for backwards compatibility
+      'Draft',
+      'Active Discussion',
+      'Banker Review'
+    ],
+    default: 'Open'
+  },
+  resolutionSummary: {
+    type: String,
+    default: ''
+  },
+  closedAt: {
+    type: Date
+  },
+  closedByName: {
+    type: String
   },
   // Configurable dynamic fields
   customFields: [customFieldSchema],
   // Associated Case Documents
   documents: [caseDocumentSchema],
-  // Banker Queries (both raised from portal and recorded from phone calls)
-  bankerQueries: [bankerQuerySchema],
+  // Case Discussions & Queries
+  bankerQueries: [caseDiscussionQuerySchema],
+  // Detailed audit trail / edit history
+  editHistory: [editHistorySchema],
+  // Granular Share Settings
+  shareSettings: [shareSettingsSchema],
+  // Primary shareCode for backward compatibility
+  shareCode: {
+    type: String,
+    unique: true,
+    index: true,
+    sparse: true
+  },
+  isShareActive: {
+    type: Boolean,
+    default: true
+  },
+  viewsCount: {
+    type: Number,
+    default: 0
+  },
   // AI Case Intelligence & Recommendations (Confidential - Internal Staff Only)
   aiIntelligence: {
     lastAnalyzedAt: { type: Date },
@@ -112,6 +232,7 @@ const caseStudySchema = new mongoose.Schema({
     similarPastCases: [{
       caseNumber: String,
       title: String,
+      caseType: String,
       propertyType: String,
       outcome: String,
       solution: String
@@ -131,20 +252,6 @@ const caseStudySchema = new mongoose.Schema({
       rationale: String
     }]
   },
-  shareCode: {
-    type: String,
-    unique: true,
-    index: true,
-    sparse: true
-  },
-  isShareActive: {
-    type: Boolean,
-    default: true
-  },
-  viewsCount: {
-    type: Number,
-    default: 0
-  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Admin',
@@ -157,7 +264,6 @@ const caseStudySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Completely independent index - no link to loan applications
-caseStudySchema.index({ status: 1, createdAt: -1 });
+caseStudySchema.index({ status: 1, caseType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('CaseStudy', caseStudySchema);
-

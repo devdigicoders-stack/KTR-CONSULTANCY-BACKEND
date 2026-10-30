@@ -22,6 +22,7 @@ const {
   softDeleteDocument,
   bulkDeleteDocuments,
   createCustomFolder,
+  renameCustomFolder,
   deleteCustomFolder,
   uploadFolderDocument,
   deleteFolderDocument,
@@ -188,6 +189,7 @@ router.route('/:id/folders')
   .post(protect, createCustomFolder);
 
 router.route('/:id/folders/:folderId')
+  .put(protect, renameCustomFolder)
   .delete(protect, deleteCustomFolder);
 
 router.route('/:id/folders/:folderId/documents')

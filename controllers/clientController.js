@@ -939,15 +939,20 @@ exports.createCustomFolder = async (req, res) => {
     }
 
     const folderName = req.body.folderName || req.body.name;
+    const parentFolderName = req.body.parentFolderName || req.body.parentFolder || null;
     if (!folderName || !folderName.trim()) {
       return res.status(400).json({ success: false, message: 'Folder name is required' });
     }
 
     const trimmedName = folderName.trim();
+    const cleanParent = parentFolderName && parentFolderName.trim() && parentFolderName.trim() !== 'Root' ? parentFolderName.trim() : null;
     if (!client.customFolders) client.customFolders = [];
 
-    // Check duplicate name
-    const existing = client.customFolders.find(f => (f.folderName || f.name || '').toLowerCase() === trimmedName.toLowerCase());
+    // Check duplicate name within the same parent
+    const existing = client.customFolders.find(f => 
+      (f.folderName || f.name || '').toLowerCase() === trimmedName.toLowerCase() &&
+      (f.parentFolderName || null) === cleanParent
+    );
     if (existing) {
       return res.status(400).json({ success: false, message: 'A folder with this name already exists' });
     }
@@ -955,6 +960,7 @@ exports.createCustomFolder = async (req, res) => {
     client.customFolders.push({
       folderName: trimmedName,
       name: trimmedName,
+      parentFolderName: cleanParent,
       createdBy: req.user?._id || req.adminId,
       createdByName: req.user?.name || 'Staff/Admin',
       createdAt: new Date(),
@@ -965,8 +971,8 @@ exports.createCustomFolder = async (req, res) => {
       editedBy: req.user?._id || req.adminId,
       editorName: req.user?.name || 'Staff/Admin',
       editorRole: req.user?.role || 'staff',
-      action: 'Custom Folder Created',
-      details: `Created folder "${trimmedName}"`,
+      action: cleanParent ? 'Subfolder Created' : 'Custom Folder Created',
+      details: cleanParent ? `Created subfolder "${trimmedName}" inside "${cleanParent}"` : `Created folder "${trimmedName}"`,
       timestamp: new Date()
     });
 
@@ -978,6 +984,72 @@ exports.createCustomFolder = async (req, res) => {
     });
   } catch (error) {
     console.error('Create Folder Error:', error);
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+};
+
+// @desc    Rename custom folder
+// @route   PUT /api/clients/:id/folders/:folderId
+// @access  Private (Admin/Staff)
+exports.renameCustomFolder = async (req, res) => {
+  try {
+    const client = await ClientProfile.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const newFolderName = req.body.folderName || req.body.name;
+    if (!newFolderName || !newFolderName.trim()) {
+      return res.status(400).json({ success: false, message: 'New folder name is required' });
+    }
+
+    const trimmedNew = newFolderName.trim();
+    let folder = null;
+    if (client.customFolders) {
+      try {
+        folder = client.customFolders.id(req.params.folderId);
+      } catch (e) {
+        folder = null;
+      }
+      if (!folder) {
+        folder = client.customFolders.find(f => f._id && f._id.toString() === req.params.folderId.toString());
+      }
+    }
+
+    if (!folder) {
+      return res.status(404).json({ success: false, message: 'Folder not found' });
+    }
+
+    const oldName = folder.folderName || folder.name;
+    folder.folderName = trimmedNew;
+    folder.name = trimmedNew;
+
+    // Update child subfolders pointing to oldName as parent
+    if (client.customFolders) {
+      client.customFolders.forEach(f => {
+        if (f.parentFolderName === oldName) {
+          f.parentFolderName = trimmedNew;
+        }
+      });
+    }
+
+    client.editHistory.push({
+      editedBy: req.user?._id || req.adminId,
+      editorName: req.user?.name || 'Staff/Admin',
+      editorRole: req.user?.role || 'staff',
+      action: 'Custom Folder Renamed',
+      details: `Renamed folder "${oldName}" to "${trimmedNew}"`,
+      timestamp: new Date()
+    });
+
+    await client.save();
+    res.json({
+      success: true,
+      message: `Folder renamed to "${trimmedNew}" successfully`,
+      data: client.customFolders
+    });
+  } catch (error) {
+    console.error('Rename Folder Error:', error);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
